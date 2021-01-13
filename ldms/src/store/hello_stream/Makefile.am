@@ -20,7 +20,7 @@ dist_man7_MANS += Plugin_hello_stream_store.man
 
 libl2_stream_csv_store_la_SOURCES = l2_stream_csv_store.c
 libl2_stream_csv_store_la_LIBADD = $(STORE_LIBADD) -lovis_json
-pkglib_LTLIBRARIES += libhello_stream_store.la
+pkglib_LTLIBRARIES += libl2_stream_csv_store.la
 
 endif
 

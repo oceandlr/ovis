@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2019-2020 National Technology & Engineering Solutions
+ * Copyright (c) 2019-2021 National Technology & Engineering Solutions
  * of Sandia, LLC (NTESS). Under the terms of Contract DE-NA0003525 with
  * NTESS, the U.S. Government retains certain rights in this software.
  * Copyright (c) 2019-2020 Open Grid Computing, Inc. All rights reserved.
@@ -43,7 +43,7 @@
  * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
  * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY out OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
@@ -71,6 +71,8 @@
 /**
  * TODO: At a minimum, get the header and always print in the same order
  * LATER: need to support mulitple schema. Can we get an end so we know to release that one?
+ * NOTE: assume the json will be something like: {foo:1, bar:2, zed-data:[{count:1, name:xyz},{count:2, name:abc}], zed2:[{time:0, count:2}]}}
+ * In the writeout, Singletons that will be included for each entry and lists that will have the same fields per entry
  */
 
 #ifndef ARRAY_SIZE
@@ -78,8 +80,7 @@
 #endif
 
 
-#define PNAME "hello_stream_store"
-#define STOREHEADER "STOREHEADER"
+#define PNAME "l2_stream_csv_store"
 
 static ldmsd_msg_log_f msglog;
 
@@ -97,18 +98,22 @@ static pthread_mutex_t cfg_lock;
 static pthread_mutex_t store_lock;
 //Well known that the written order will be singletonkeys followed by listentry keys
 static int nkey = 0;
-static int nsingleton = 0;
-static int nlist = 0;
-static int nlistentry = 0;
-static char* listkey = NULL;
-static char** listentrykey = NULL;
+static int nsingleton = 0; // number of singletons in a line
 static char** singletonkey = NULL;
+static int nmulti = 0; //number of lists in a line. list can only have dicts and all dicts in a list must have same keys
+struct listdict {
+        char* listkey;
+        int ndict; // there are a variable number of dicts in the list. all dicts in a list must have same keys
+        char** dictkey;
+};
+static struct listdict *multikey = NULL;
+static int validheader = 0;
 static int buffer = 0;
 
-
 static void _clear_key_info(){
-        int i;
-        
+        int i, j;
+
+        validheader = 0;
         for (i = 0; i < nsingleton; i++){
                 if (singletonkey[i]) free(singletonkey[i]);
         }
@@ -116,52 +121,94 @@ static void _clear_key_info(){
         singletonkey = NULL;
         nsingleton = 0;
 
-        for (i = 0; i < nlistentry; i++){
-                if (listsentrykey[i]) free(listentrykey[i]);
+        for (i = 0; i < nmulti; i++){
+                if (multikey[i].listkey) free(multikey[i].listkey);
+                multikey[i].listkey = NULL;
+                
+                for (j = 0; j < multikey[i].ndict; j++){
+                        if (multikey[i].dictkey[j]) free (multikey[i].dictkey[j]);
+                        multikey[i].dictkey[j] = NULL;
+                }
+                multikey[i].ndict = 0;
         }
-        if (listentrykey) free(listentrykey);
-        listentrykey = NULL;
-        nlistentry = 0;
-
-        if (listkey) free(listkey);
-        listkey = NULL;
-        nlist = 0;
+        if (multikey) free(multikey);
+        multikey = NULL;
+        nmulti = 0;
 }
 
 
+static int _parse_json_list(json_entity_t e, int idx){
+        //this should only be list of dicts
+        json_entity_t li, di;
+        int countdi;
+        int i;
+
+        //for getting the header, we only care about the first li
+        //        for (li = json_item_first(e); li; li = json_item_next(li)){
+        li = json_item_first(e);
+        if (li->type != JSON_DICT_VALUE){
+                msglog(LDMSD_LERROR, PNAME ": list can only have dict entries\n");
+                return -1;
+        }
+        //        msglog(LDMSD_LDEBUG, PNAME ": %d item in list with type %s\n",
+        //               countli, json_type_name(li->type));
+                
+        //parse the dict. process once to fill and 2nd time to fill
+        for (i = 0; i < 2; i++){
+                countdi = 0;
+                for (di = json_attr_first(li); di; di = json_attr_next(di)){
+                        //only allowed singleton entries
+                        msglog(LDMSD_LDEBUG, PNAME ": list %d dict item %d = %s\n",
+                               idx, countdi, di->value.attr_->name->value.str_->str);
+                        if (i == 1){
+                                multikey[idx].dictkey[countdi] = strdup(di->value.attr_->name->value.str_->str);
+                        }
+                        countdi++;
+                }
+                if (i == 0){
+                        multikey[idx].dictkey = (char**) calloc(countdi, sizeof(char*));
+                        if (!multikey[idx].dictkey){
+                                //TODO: memory error
+                                return -1;
+                        }
+                        multikey[idx].ndict = countdi;
+                }
+        }
+        return 0;
+
+out:
+        return -1;
+};
+
 static int _get_header_from_data(json_entity_t e){
 
-  json_entity_t a;
+        json_entity_t a;
 	jbuf_t jb; //this is a test
-	int i, j;
+        int isingleton, imulti;
+	int i, j, rc;
 
-	//NOTE: assume the json will be something like: {foo:1, bar:2, zed-data:[{count:1, name:xyz},{count:2, name:abc}]}
-	//Singletons that will be included for each entry and lists that will have the same fields per entry
-        
 	//TODO: will have to put in a bunch of robustnesss checks
 	//TODO: check for thread safety
 
         _clear_key_info();
         
 	// process to build the header.
-        int i = 0;
+        msglog(LDMSD_LDEBUG, PNAME ":starting first pass\n");
+        i = 0;
 	for (a = json_attr_first(e); a; a = json_attr_next(a)){
-	        msglog(LDMSD_LDEBUG, PNAME ": get_header_from_data: parsing attr %d\n", i);
                 json_attr_t attr = a->value.attr_;
+                msglog(LDMSD_LDEBUG, PNAME ": get_header_from_data: parsing attr %d '%s' with value type %s\n",
+                       i, attr->name->value.str_->str, json_type_name(attr->value->type));
 		switch (attr->value->type){
 		case JSON_LIST_VALUE:
-                        //this will be the only valid non-singleton and all of these must be the same
-                        //TODO: will need to check that these are all the same
-                        if (nlist){
-                                msglog(LDMSD_LDEBUG, PNAME ": already have a LIST so not incrementing\n");
-                        } else {
-                                nlist++;
-                        }
+                        //TODO: think the json will keep the list name from being the same
+                        //note there is no way to check that all the dicts are the same, except by checking every line.
+                        //instead will take the first one that we get and will subbsequently ask for those values
+                        nmulti++;
                         break;
 		case JSON_DICT_VALUE:
-                        //not handling this
-                        msglog(LDMSD_LERROR, PNAME ": cannot handle type DICT in header\n");
-                        return -1;
+                        msglog(LDMSD_LERROR, PNAME ": not handling type JSON_DICT_VALUE in header\n");
+                        goto out;
                         break;
 		case JSON_NULL_VALUE:
                         //treat like a singleton
@@ -169,7 +216,7 @@ static int _get_header_from_data(json_entity_t e){
                         break;
 		case JSON_ATTR_VALUE:
                         msglog(LDMSD_LERROR, PNAME ": should not have ATTR type now\n");
-                        return -1;
+                        goto out;
                         break;
 		default:
                         //it's a singleton
@@ -178,148 +225,89 @@ static int _get_header_from_data(json_entity_t e){
 		}
                 i++;
 	}
-	if ((nsingleton == 0) && (nlist == 0)){
+        msglog(LDMSD_LDEBUG, PNAME ":completed first pass\n");
+        
+	if ((nsingleton == 0) && (nmulti == 0)){
 		msglog(LDMSD_LERROR, PNAME ": no keys for header. Waiting for next one\n");
-		return -1;
+                goto out;
 	}
 	
         singletonkey = (char**) calloc(nsingleton, sizeof(char*));
-        listentrykey = (char**) calloc(nlistentry, sizeof(char*));
-	if ((nsingleton && !singletonkey) || (nlistentry && !listentrykey)){
-                _clear_key_info();
-		return -1;
+        multikey = (struct listdict*) calloc(nmulti, sizeof(struct listdict));
+	if ((nsingleton && !singletonkey) || (nmulti&& !multikey)){
+                goto out;
 	}
 
-	// process again to fill
+	// process again to fill. will parse dicts here
+        msglog(LDMSD_LDEBUG, PNAME ":starting second pass\n");
+        isingleton = 0;
+        imulti = 0;
+        i = 0;
 	for (a = json_attr_first(e); a; a = json_attr_next(a)){
                 json_attr_t attr = a->value.attr_;
-		if (!attr){
-			msglog(LDMSD_LERROR, PNAME ": Why is attr null?\n");
+                msglog(LDMSD_LDEBUG, PNAME ": get_header_from_data: parsing attr %d '%s' with value type %s\n",
+                       i, attr->name->value.str_->str, json_type_name(attr->value->type));
 		switch (attr->value->type){
 		case JSON_LIST_VALUE:
-                        //this will be the only valid non-singleton and all of these must be the same
-                        //TODO: will need to check that these are all the same
-                        if (listentrykey[0] == NULL){
-                                //PROCESS THEM HERE....
-                        }
+                        multikey[imulti].listkey = strdup(attr->name->value.str_->str);
+                        rc = _parse_json_list(attr->value, imulti++);
+                        if (rc) goto out;
                         break;
 		case JSON_DICT_VALUE:
-                        //not handling this
-                        msglog(LDMSD_LERROR, PNAME ": cannot handle type DICT in header\n");
-                        return -1;
-                        break;
-		case JSON_NULL_VALUE:
-                        //treat like a singleton
-                        //PROCESS NAME HERE
+                        msglog(LDMSD_LERROR, PNAME ": not handling type JSON_DICT_VALUE in header\n");
+                        goto out;
                         break;
 		case JSON_ATTR_VALUE:
                         msglog(LDMSD_LERROR, PNAME ": should not have ATTR type now\n");
-                        return -1;
+                        goto out;
                         break;
+		case JSON_NULL_VALUE:                        
 		default:
                         //it's a singleton
-                        //PROCESS NAME HERE
+                        singletonkey[isingleton++] = strdup(attr->name->value.str_->str);
                         break;
 		}
-	}
+        }
 
+        msglog(LDMSD_LDEBUG, PNAME ": printing header\n");
+        //order will be order of singletons and order of dict. repeat dicts will be separate entries in the csv
+        for (i = 0; i < nsingleton; i++){
+                msglog(LDMSD_LDEBUG, "<%s>\n", singletonkey[i]);
+                fprintf(streamfile, "%s", singletonkey[i]);
+                if (i < (nsingleton -1)){
+                        fprintf(streamfile, ",");
+                }
+        }
+        if ((nsingleton > 0) && (nmulti > 0) && (multikey[0].ndict > 0)) fprintf(streamfile, ",");
 
-                START HERE....
-
+        for (i = 0; i < nmulti; i++){
+                for (j = 0; j < multikey[i].ndict; j++){ 
+                        msglog(LDMSD_LDEBUG, "<%s:%s>\n", multikey[i].listkey, multikey[i].dictkey[j]);
+                        fprintf(streamfile, "%s:%s", multikey[i].listkey, multikey[i].dictkey[j]);                
+                        if (j < (multikey[i].ndict-1)){
+                                fprintf(streamfile, ",");
+                        }
+                }
+                if (i < nmulti-1){
+                        fprintf(streamfile, ",");
+                }
+        }
+        fprintf(streamfile, "\n");
+        fflush(streamfile);
+        fsync(fileno(streamfile));
+        validheader = 1;
+                
+        return 0;
         
-	i = 0;
-	for (a = json_attr_first(e); a; a = json_attr_next(a)){
-		json_attr_t attr = a->value.attr_;
-		if (!attr){
-			msglog(LDMSD_LERROR, PNAME ": Why is attr null?\n");
-		} else {
-			keyarray[i] = strdup(attr->name->value.str_->str);
-			msglog(LDMSD_LDEBUG, PNAME ": header adding key <%s>\n", keyarray[i]);
-			jbuf_append_str(jb, "%s", keyarray[i]);
-			fprintf(streamfile, "%s", keyarray[i]);
-			i++;
-			if (i < numkeys){
-				fprintf(streamfile, ",");
-				jbuf_append_str(jb, ",");
-			}
-		}
-	}
-	fprintf(streamfile,"\n");
-	fprintf(streamfile, jb->buf);
-	fprintf(streamfile,"\n");
-	jbuf_free(jb);
-
 out:
-	
+        msglog(LDMSD_LDEBUG, PNAME ":header build failed - return -1\n");        
+        
+	_clear_key_info();
 	msglog(LDMSD_LDEBUG, PNAME ": returning from get_header_from_data\n");
 
-	return 0;
-}
-
-static int _get_header_from_headerline(json_entity_t e){
-
-	int i, j;
-	char *saveptr = NULL;
-	char *pch, *tempstr;
-
-	//TODO: FIXME -- have to handle different types.
-	msglog(LDMSD_LERROR, PNAME ": get_header_from_headerline temporarily disabled\n");
 	return -1;
-
-	json_attr_t attr = e->value.attr_;
-	if (!attr){
-		msglog(LDMSD_LERROR, PNAME ": Why is attr null?\n");
-		return -1;
-	}
-
-	// process once to count
-	tempstr = strdup(attr->value->value.str_->str);
-	if (!tempstr) return -1;
-
-	i = 0;
-	pch = strtok_r(tempstr, ",", &saveptr);
-	while(pch!= NULL){
-		i++;
-		pch = strtok_r(NULL, ",", &saveptr);
-	}
-	free(tempstr);
-	if (i == 0){
-		msglog(LDMSD_LERROR, PNAME ": no keys for header. Waiting for next one\n");
-		return -1;
-	}
-
-	if (keyarray){
-		for (j = 0; j < numkeys; j++){
-			free(keyarray[j]);
-		}
-		free(keyarray);
-	}
-	numkeys = i;
-	keyarray = (char**) calloc(numkeys, sizeof(char*));
-	if (!keyarray){
-		numkeys = 0;
-		return -1;
-	}
-
-	// process again to fill
-	tempstr = strdup(attr->value->value.str_->str);
-	i = 0;
-	pch = strtok_r(tempstr, ",", &saveptr);
-	while(pch!= NULL){
-		keyarray[i] = strdup(pch);
-		fprintf(streamfile, "%s", keyarray[i]);
-		i++;
-		if (i < numkeys){
-			fprintf(streamfile, ",");
-		}
-		pch = strtok_r(NULL, ",", &saveptr);
-	}
-	fprintf(streamfile,"\n");
-	free(tempstr);
-
-	msglog(LDMSD_LDEBUG, PNAME ": returning from get_header_from_headerline\n");
-	return 0;
 }
+
 
 
 static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
@@ -362,99 +350,87 @@ static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
 			goto out;
 		}
 
-		/**
-		 * if we get a header, then parse it for the order.
-		 * if we don't get a header, then find all the tags and put them in some order. that
-		 * order will be used each time (note that we could put them in order when we send them
-		 * and then just peel them off in order
-		 */
+                if (!validheader){
+                        rc = _get_header_from_data(e);
+                        if (rc != 0) {
+                                msglog(LDMSD_LDEBUG, PNAME ": error processing header from data <%d>\n", rc);
+                                goto out;
+                        }
+                }
+        }
+                
+#if 0
 
-		json_entity_t en = json_attr_find(e, STOREHEADER);
-		if (en){
-			msglog(LDMSD_LDEBUG, PNAME ": getting header from headerline\n");
-			rc = _get_header_from_headerline(en);
-			if (!rc) {
-			     msglog(LDMSD_LDEBUG, PNAME ": error processing header from headerline <%d>\n", rc);
-			     goto out;
-			}
-		} else {
-			if (keyarray == NULL){
-                                int rcx = 0;
-				msglog(LDMSD_LDEBUG, PNAME ": getting header from keyarray\n");
-				rcx = _get_header_from_data(e);
-				if (rcx != 0) {
-				     msglog(LDMSD_LDEBUG, PNAME ": error processing header from data <%d>\n", rcx);
-				     goto out;
-				}
-			}
-
-			//now write them all out in the same order
-			msglog(LDMSD_LDEBUG, PNAME ": numkeys %d\n", numkeys);
-			for (i = 0; i < numkeys; i++){
-			     //how many attr in this entity?
-    			     json_entity_t en = json_value_find(e, keyarray[i]);
-			     if (en == NULL){
-			          msglog(LDMSD_LDEBUG, PNAME ": NULL return from find for key <%s>\n",
-			 		keyarray[i]);
-			 	 //print nothing
-			     } else {
-				  msglog(LDMSD_LDEBUG, PNAME ": processing key '%d' type '%s'\n",
-					 i, json_type_name(en->type));
-				  switch (en->type) {
-				  case JSON_INT_VALUE:
-				    fprintf(streamfile, "%ld", en->value.int_);
-				    break;
-				  case JSON_BOOL_VALUE:
-				    if (en->value.bool_)
-				      fprintf(streamfile, "%s", "true");
-				    else
-				      fprintf(streamfile, "%s", "false");
-				    break;
-				  case JSON_FLOAT_VALUE:
-				    fprintf(streamfile, "%f", en->value.double_);
-				    break;
-				  case JSON_STRING_VALUE:
-				    fprintf(streamfile, "\"%s\"", en->value.str_->str);
-				    break;
-				  case JSON_LIST_VALUE:
-				    //how to handle this?
-				    //print_list(jb, e);
-				    fprintf(streamfile, "LDMS_LIST_PRINTME");
-				    break;
-				  case JSON_DICT_VALUE:
-				    //how to handle this?
-				    //print_dict(jb, e);
-				    fprintf(streamfile, "LDMS_DICT_PRINTME");
-				    break;
-				  case JSON_NULL_VALUE:
-				    //how to handle this?
-				    fprintf(streamfile, "null");
-				    break;
-				  case JSON_ATTR_VALUE:
-				    msglog(LDMSD_LERROR, PNAME ": Value should not be ATTR type\n");
-				    fprintf(streamfile, "LDMS_UNKNOWN");
-				    break;
-				  default:
-				    msglog(LDMSD_LDEBUG, PNAME, ": cannot process JSON type '%s'\n",
-					   json_type_name(en->type));
-				    fprintf(streamfile, "UNKNOWN");
-				  }
-			     }
-			     if (i < (numkeys-1)){
-			       fprintf(streamfile, ",");
-			     }
-			}
-			fprintf(streamfile, "\n");
-			if (!buffer){
-				fflush(streamfile);
-				fsync(fileno(streamfile));
-			}
-		}
-	} else {
-		msglog(LDMSD_LERROR, PNAME ": unknown stream type\n");
+                
+                msglog(LDMSD_LDEBUG, PNAME ": numkeys %d\n", numkeys);
+                for (i = 0; i < numkeys; i++){
+                        //how many attr in this entity?
+                        json_entity_t en = json_value_find(e, keyarray[i]);
+                        if (en == NULL){
+                                msglog(LDMSD_LDEBUG, PNAME ": NULL return from find for key <%s>\n",
+                                       keyarray[i]);
+                                //print nothing
+                        } else {
+                                msglog(LDMSD_LDEBUG, PNAME ": processing key '%d' type '%s'\n",
+                                       i, json_type_name(en->type));
+                                switch (en->type) {
+                                case JSON_INT_VALUE:
+                                        fprintf(streamfile, "%ld", en->value.int_);
+                                        break;
+                                case JSON_BOOL_VALUE:
+                                        if (en->value.bool_)
+                                                fprintf(streamfile, "%s", "true");
+                                        else
+                                                fprintf(streamfile, "%s", "false");
+                                        break;
+                                case JSON_FLOAT_VALUE:
+                                        fprintf(streamfile, "%f", en->value.double_);
+                                        break;
+                                case JSON_STRING_VALUE:
+                                        fprintf(streamfile, "\"%s\"", en->value.str_->str);
+                                        break;
+                                case JSON_LIST_VALUE:
+                                        //how to handle this?
+                                        //print_list(jb, e);
+                                        fprintf(streamfile, "LDMS_LIST_PRINTME");
+                                        break;
+                                case JSON_DICT_VALUE:
+                                        //how to handle this?
+                                        //print_dict(jb, e);
+                                        fprintf(streamfile, "LDMS_DICT_PRINTME");
+                                        break;
+                                case JSON_NULL_VALUE:
+                                        //how to handle this?
+                                        fprintf(streamfile, "null");
+                                        break;
+                                case JSON_ATTR_VALUE:
+                                        msglog(LDMSD_LERROR, PNAME ": Value should not be ATTR type\n");
+                                        fprintf(streamfile, "LDMS_UNKNOWN");
+                                        break;
+                                default:
+                                        msglog(LDMSD_LDEBUG, PNAME, ": cannot process JSON type '%s'\n",
+                                               json_type_name(en->type));
+                                        fprintf(streamfile, "UNKNOWN");
+                                }
+                        }
+                        if (i < (numkeys-1)){
+                                fprintf(streamfile, ",");
+                        }
+                }
+                fprintf(streamfile, "\n");
+                if (!buffer){
+                        fflush(streamfile);
+                        fsync(fileno(streamfile));
+                }
+        } else {
+                msglog(LDMSD_LERROR, PNAME ": unknown stream type\n");
 		rc = EINVAL;
 		goto out;
 	}
+#endif
+#if 1
+        rc = -1;
+#endif
 
 out:
 
@@ -629,7 +605,7 @@ static void term(struct ldmsd_plugin *self)
 
 static const char *usage(struct ldmsd_plugin *self)
 {
-	return  "    config name=hello_stream_store path=<path> container=<container> stream=<stream> [buffer=<0/1>] \n"
+	return  "    config name=l2_stream_csv_store path=<path> container=<container> stream=<stream> [buffer=<0/1>] \n"
 		"         - Set the root path for the storage of csvs and some default parameters\n"
 		"         - path       The path to the root of the csv directory\n"
 		"         - container  The directory under the path\n"
@@ -640,9 +616,9 @@ static const char *usage(struct ldmsd_plugin *self)
 
 
 
-static struct ldmsd_store hello_stream_store = {
+static struct ldmsd_store l2_stream_csv_store = {
 	.base = {
-			.name = "hello_stream_store",
+			.name = "l2_stream_csv_store",
 			.type = LDMSD_PLUGIN_STORE,
 			.term = term,
 			.config = config,
@@ -653,17 +629,17 @@ static struct ldmsd_store hello_stream_store = {
 struct ldmsd_plugin *get_plugin(ldmsd_msg_log_f pf)
 {
 	msglog = pf;
-	return &hello_stream_store.base;
+	return &l2_stream_csv_store.base;
 }
 
-static void __attribute__ ((constructor)) hello_stream_store_init();
-static void hello_stream_store_init()
+static void __attribute__ ((constructor)) l2_stream_csv_store_init();
+static void l2_stream_csv_store_init()
 {
 	pthread_mutex_init(&cfg_lock, NULL);
 }
 
-static void __attribute__ ((destructor)) hello_stream_store_fini(void);
-static void hello_stream_store_fini()
+static void __attribute__ ((destructor)) l2_stream_csv_store_fini(void);
+static void l2_stream_csv_store_fini()
 {
 	pthread_mutex_destroy(&cfg_lock);
 }
