@@ -69,11 +69,16 @@
 
 
 /**
- * TODO: At a minimum, get the header and always print in the same order
- * LATER: need to support mulitple schema. Can we get an end so we know to release that one?
- * NOTE: assume the json will be something like: {foo:1, bar:2, zed-data:[{count:1, name:xyz},{count:2, name:abc}], zed2:[{time:0, count:2}]}}
- * In the writeout, Singletons that will be included for each entry and lists that will have the same fields per entry
+ * CURRENT GROUND RULES:
+ * 1) the json will be something like: {foo:1, bar:2, zed-data:[{count:1, name:xyz},{count:2, name:abc}], zed2:[{time:0, count:2}]}}
+ * 2) can get this at the beginning and assume it will be true for all time
+ * 3) can have a list with no entries
+ * 4) there will be exactly 1 dict
+ * 5) In the writeout, each dict will be in its own csv line with the singletons
+ * 6) one stream only
  */
+
+//TODO - will want rollover
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*a))
@@ -88,7 +93,6 @@ static ldmsd_msg_log_f msglog;
 #define stringify(_x) _stringify(_x)
 
 
-//TODO: need to be able to handle multiple different streams 
 static char* root_path;
 static char* container;
 static char* schema;
@@ -97,16 +101,17 @@ static char* streamfile_name;
 static pthread_mutex_t cfg_lock;
 static pthread_mutex_t store_lock;
 //Well known that the written order will be singletonkeys followed by listentry keys
-static int nkey = 0;
-static int nsingleton = 0; // number of singletons in a line
-static char** singletonkey = NULL;
-static int nmulti = 0; //number of lists in a line. list can only have dicts and all dicts in a list must have same keys
-struct listdict {
-        char* listkey;
+struct linedata {
+        int nsingleton;
+        char** singletonkey;
+        int nlist;
+        char* listkey; //will have at most one list;
         int ndict; // there are a variable number of dicts in the list. all dicts in a list must have same keys
         char** dictkey;
+        int nkey;
+        int nheaderkey;  //number of keys in the header 
 };
-static struct listdict *multikey = NULL;
+static struct linedata dataline;
 static int validheader = 0;
 static int buffer = 0;
 
@@ -114,77 +119,78 @@ static void _clear_key_info(){
         int i, j;
 
         validheader = 0;
-        for (i = 0; i < nsingleton; i++){
-                if (singletonkey[i]) free(singletonkey[i]);
+        for (i = 0; i < dataline.nsingleton; i++){
+                if (dataline.singletonkey[i]) free(dataline.singletonkey[i]);
         }
-        if (singletonkey) free(singletonkey);
-        singletonkey = NULL;
-        nsingleton = 0;
+        if (dataline.singletonkey) free(dataline.singletonkey);
+        dataline.singletonkey = NULL;
+        dataline.nsingleton = 0;
 
-        for (i = 0; i < nmulti; i++){
-                if (multikey[i].listkey) free(multikey[i].listkey);
-                multikey[i].listkey = NULL;
+        if (dataline.listkey) free (dataline.listkey);
+        dataline.listkey = NULL;
+        dataline.nlist = 0;
                 
-                for (j = 0; j < multikey[i].ndict; j++){
-                        if (multikey[i].dictkey[j]) free (multikey[i].dictkey[j]);
-                        multikey[i].dictkey[j] = NULL;
-                }
-                multikey[i].ndict = 0;
+        for (i = 0; i< dataline.ndict; i++){
+                if (dataline.dictkey[i]) free (dataline.dictkey[i]);
+                dataline.dictkey[i] = NULL;
         }
-        if (multikey) free(multikey);
-        multikey = NULL;
-        nmulti = 0;
+        dataline.ndict = 0;
+        dataline.nheaderkey = 0;
 }
 
 
-static int _parse_json_list(json_entity_t e, int idx){
+static int _parse_list_for_header(json_entity_t e){
+        //get specialized data for building the header
         //this should only be list of dicts
         json_entity_t li, di;
-        int countdi;
+        int idict;
         int i;
 
         //for getting the header, we only care about the first li
-        //        for (li = json_item_first(e); li; li = json_item_next(li)){
         li = json_item_first(e);
+        if (li == NULL){
+                msglog(LDMSD_LERROR, PNAME ": list cannot be empty for header.\n");
+                return -1;
+        }
         if (li->type != JSON_DICT_VALUE){
                 msglog(LDMSD_LERROR, PNAME ": list can only have dict entries\n");
                 return -1;
         }
-        //        msglog(LDMSD_LDEBUG, PNAME ": %d item in list with type %s\n",
-        //               countli, json_type_name(li->type));
-                
         //parse the dict. process once to fill and 2nd time to fill
         for (i = 0; i < 2; i++){
-                countdi = 0;
+                idict = 0;
                 for (di = json_attr_first(li); di; di = json_attr_next(di)){
                         //only allowed singleton entries
-                        msglog(LDMSD_LDEBUG, PNAME ": list %d dict item %d = %s\n",
-                               idx, countdi, di->value.attr_->name->value.str_->str);
+                        msglog(LDMSD_LDEBUG, PNAME ": list %s dict item %d = %s\n",
+                               dataline.listkey, idict, di->value.attr_->name->value.str_->str);
                         if (i == 1){
-                                multikey[idx].dictkey[countdi] = strdup(di->value.attr_->name->value.str_->str);
+                               dataline.dictkey[idict] = strdup(di->value.attr_->name->value.str_->str);
                         }
-                        countdi++;
+                        idict++;
+                }
+                if (idict == 0){
+                        msglog(LDMSD_LDEBUG, PNAME ": empty dict for header parse\n");
+                        return -1;
                 }
                 if (i == 0){
-                        multikey[idx].dictkey = (char**) calloc(countdi, sizeof(char*));
-                        if (!multikey[idx].dictkey){
-                                //TODO: memory error
-                                return -1;
+                        dataline.dictkey = (char**) calloc(idict, sizeof(char*));
+                        if (!(dataline.dictkey)){
+                                return ENOMEM;
                         }
-                        multikey[idx].ndict = countdi;
+                        dataline.ndict = idict;
                 }
         }
         return 0;
 
-out:
-        return -1;
 };
 
-static int _get_header_from_data(json_entity_t e){
+static int _get_header_from_data(json_entity_t e, jbuf_t jb){
+        //from the data, builds the header and supporting structs
+        //NOTE: if this comes from the first line then all lists and dict options must be in this line
+        //TODO: would be useful to have an option that sends the header first. In that case, will need to build the structs from it
 
         json_entity_t a;
-	jbuf_t jb; //this is a test
-        int isingleton, imulti;
+        int isingleton, ilist, iheaderkey;
 	int i, j, rc;
 
 	//TODO: will have to put in a bunch of robustnesss checks
@@ -195,119 +201,286 @@ static int _get_header_from_data(json_entity_t e){
 	// process to build the header.
         msglog(LDMSD_LDEBUG, PNAME ":starting first pass\n");
         i = 0;
+        isingleton = 0;
+        ilist = 0;
 	for (a = json_attr_first(e); a; a = json_attr_next(a)){
                 json_attr_t attr = a->value.attr_;
                 msglog(LDMSD_LDEBUG, PNAME ": get_header_from_data: parsing attr %d '%s' with value type %s\n",
                        i, attr->name->value.str_->str, json_type_name(attr->value->type));
 		switch (attr->value->type){
 		case JSON_LIST_VALUE:
-                        //TODO: think the json will keep the list name from being the same
-                        //note there is no way to check that all the dicts are the same, except by checking every line.
-                        //instead will take the first one that we get and will subbsequently ask for those values
-                        nmulti++;
+                        //assumes that all the dicts in a list will have the same keys for all time
+                        if (ilist != 0){
+                                msglog(LDMSD_LDEBUG, PNAME ": can only support 1 list in the header\n");
+                                rc = EINVAL;
+                                goto err;
+                        }
+                        ilist++;
                         break;
 		case JSON_DICT_VALUE:
                         msglog(LDMSD_LERROR, PNAME ": not handling type JSON_DICT_VALUE in header\n");
-                        goto out;
+                        rc = EINVAL;
+                        goto err;
                         break;
 		case JSON_NULL_VALUE:
                         //treat like a singleton
-                        nsingleton++;
+                        isingleton++;
                         break;
 		case JSON_ATTR_VALUE:
                         msglog(LDMSD_LERROR, PNAME ": should not have ATTR type now\n");
-                        goto out;
+                        rc = EINVAL;
+                        goto err;
                         break;
 		default:
                         //it's a singleton
-                        nsingleton++;
+                        isingleton++;
                         break;
 		}
                 i++;
 	}
-        msglog(LDMSD_LDEBUG, PNAME ":completed first pass\n");
+        msglog(LDMSD_LDEBUG, PNAME ": completed first pass\n");
         
-	if ((nsingleton == 0) && (nmulti == 0)){
+	if ((isingleton == 0) && (ilist == 0)){
 		msglog(LDMSD_LERROR, PNAME ": no keys for header. Waiting for next one\n");
-                goto out;
-	}
-	
-        singletonkey = (char**) calloc(nsingleton, sizeof(char*));
-        multikey = (struct listdict*) calloc(nmulti, sizeof(struct listdict));
-	if ((nsingleton && !singletonkey) || (nmulti&& !multikey)){
-                goto out;
+                rc = EINVAL;
+                goto err;
 	}
 
-	// process again to fill. will parse dicts here
-        msglog(LDMSD_LDEBUG, PNAME ":starting second pass\n");
-        isingleton = 0;
-        imulti = 0;
+        dataline.nsingleton = isingleton;
+        dataline.nlist = ilist;
+        dataline.singletonkey = (char**) calloc(dataline.nsingleton, sizeof(char*));
+	if (dataline.nsingleton && !dataline.singletonkey){
+                rc = ENOMEM;
+                goto err;
+	}
+
+	// process again to fill. will parse dicts here 
+        msglog(LDMSD_LDEBUG, PNAME ": starting second pass\n");
         i = 0;
+        isingleton = 0;
 	for (a = json_attr_first(e); a; a = json_attr_next(a)){
                 json_attr_t attr = a->value.attr_;
                 msglog(LDMSD_LDEBUG, PNAME ": get_header_from_data: parsing attr %d '%s' with value type %s\n",
                        i, attr->name->value.str_->str, json_type_name(attr->value->type));
 		switch (attr->value->type){
 		case JSON_LIST_VALUE:
-                        multikey[imulti].listkey = strdup(attr->name->value.str_->str);
-                        rc = _parse_json_list(attr->value, imulti++);
-                        if (rc) goto out;
+                        dataline.listkey = strdup(attr->name->value.str_->str);
+                        rc = _parse_list_for_header(attr->value);
+                        if (rc) goto err;
                         break;
 		case JSON_DICT_VALUE:
                         msglog(LDMSD_LERROR, PNAME ": not handling type JSON_DICT_VALUE in header\n");
-                        goto out;
+                        rc = EINVAL;
+                        goto err;
                         break;
 		case JSON_ATTR_VALUE:
                         msglog(LDMSD_LERROR, PNAME ": should not have ATTR type now\n");
-                        goto out;
+                        rc = EINVAL;
+                        goto err;
                         break;
 		case JSON_NULL_VALUE:                        
 		default:
                         //it's a singleton
-                        singletonkey[isingleton++] = strdup(attr->name->value.str_->str);
+                        dataline.singletonkey[isingleton++] = strdup(attr->name->value.str_->str);
                         break;
 		}
+                i++;
         }
 
-        msglog(LDMSD_LDEBUG, PNAME ": printing header\n");
+        msglog(LDMSD_LDEBUG, PNAME ": assembling header\n");
+        dataline.nheaderkey = dataline.nsingleton  + dataline.ndict;
+
         //order will be order of singletons and order of dict. repeat dicts will be separate entries in the csv
-        for (i = 0; i < nsingleton; i++){
-                msglog(LDMSD_LDEBUG, "<%s>\n", singletonkey[i]);
-                fprintf(streamfile, "%s", singletonkey[i]);
-                if (i < (nsingleton -1)){
-                        fprintf(streamfile, ",");
+        for (i = 0; i < dataline.nsingleton; i++){
+                msglog(LDMSD_LDEBUG, "<%s>\n", dataline.singletonkey[i]);
+                if (i < dataline.nheaderkey-1){
+                        jb = jbuf_append_str(jb, "%s,", dataline.singletonkey[i]);
+                } else {
+                        jb = jbuf_append_str(jb, "%s", dataline.singletonkey[i]);
                 }
         }
-        if ((nsingleton > 0) && (nmulti > 0) && (multikey[0].ndict > 0)) fprintf(streamfile, ",");
 
-        for (i = 0; i < nmulti; i++){
-                for (j = 0; j < multikey[i].ndict; j++){ 
-                        msglog(LDMSD_LDEBUG, "<%s:%s>\n", multikey[i].listkey, multikey[i].dictkey[j]);
-                        fprintf(streamfile, "%s:%s", multikey[i].listkey, multikey[i].dictkey[j]);                
-                        if (j < (multikey[i].ndict-1)){
-                                fprintf(streamfile, ",");
-                        }
-                }
-                if (i < nmulti-1){
-                        fprintf(streamfile, ",");
+        for (i = 0; i < dataline.ndict; i++){ 
+                msglog(LDMSD_LDEBUG, "<%s:%s>\n", dataline.listkey, dataline.dictkey[i]);
+                if (i < dataline.ndict-1){
+                        jb = jbuf_append_str(jb, "%s:%s,", dataline.listkey, dataline.dictkey[i]);
+                } else {
+                        jb = jbuf_append_str(jb, "%s:%s", dataline.listkey, dataline.dictkey[i]);
                 }
         }
-        fprintf(streamfile, "\n");
-        fflush(streamfile);
-        fsync(fileno(streamfile));
         validheader = 1;
                 
         return 0;
         
-out:
-        msglog(LDMSD_LDEBUG, PNAME ":header build failed - return -1\n");        
-        
+err:
+        msglog(LDMSD_LDEBUG, PNAME ": header build failed\n");        
 	_clear_key_info();
-	msglog(LDMSD_LDEBUG, PNAME ": returning from get_header_from_data\n");
+        validheader = 0;
 
-	return -1;
+	return rc;
 }
 
+
+static int _print_singleton(json_entity_t en, jbuf_t jb){
+                        
+        switch (en->type) {
+        case JSON_INT_VALUE:
+                jb = jbuf_append_str(jb, "%ld", en->value.int_);
+                break;
+        case JSON_BOOL_VALUE:
+                if (en->value.bool_)
+                        jb = jbuf_append_str(jb, "true");
+                else
+                        jb = jbuf_append_str(jb, "false");
+                break;
+        case JSON_FLOAT_VALUE:
+                jb = jbuf_append_str(jb, "%f", en->value.double_);
+                break;
+        case JSON_STRING_VALUE:
+                jb = jbuf_append_str(jb, "\"%s\"", en->value.str_->str);
+                break;
+        case JSON_NULL_VALUE:
+                jb = jbuf_append_str(jb, "null");
+                break;
+        default:
+                //this should not happen
+                msglog(LDMSD_LDEBUG, PNAME, ": cannot process JSON type '%s' as singleton\n",
+                       json_type_name(en->type));
+                return -1;
+                break;
+        }
+
+        return 0;
+}
+
+
+static int _print_data_lines(json_entity_t e, FILE* file){
+        //well known order
+
+        json_entity_t en, li;
+        jbuf_t jbs, jb;
+        int iheaderkey, ilines;
+        int i;
+        int rc;
+
+
+        msglog(LDMSD_LDEBUG, PNAME ": _print_data_lines begin\n");
+        ilines = 0;
+        iheaderkey = 0;
+
+        jbs = NULL;
+        jbs = jbuf_new();
+        if (dataline.nsingleton > 0){
+                for (i = 0; i < dataline.nsingleton; i++){
+                        en = json_value_find(e, dataline.singletonkey[i]);
+                        if (en == NULL){
+                                msglog(LDMSD_LDEBUG, PNAME ": NULL return from find for key <%s>\n",
+                                       dataline.singletonkey[i]);
+                                //this might be ok..
+                        } else {
+                                msglog(LDMSD_LDEBUG, PNAME ": processing key '%d' type '%s'\n",
+                                       i, json_type_name(en->type));
+                                rc = _print_singleton(en, jbs);
+                                if (rc){
+                                        msglog(LDMSD_LDEBUG, PNAME ": Cannot print data because of a variable print problem\n");
+                                        jbuf_free(jbs);
+                                        return rc;
+                                }
+                        }
+                        if (iheaderkey < (dataline.nheaderkey-1)){
+                                jbs = jbuf_append_str(jbs, ",");
+                        }
+                        iheaderkey++;
+                }
+        } else {
+                jbs = jbuf_append_str(jbs,""); //Need this for adding the list items
+        }
+
+        //for each dict, write a separate line in the file
+        //if header has no list or an empty list, just write the singletons
+        if (dataline.nlist == 0){
+                fprintf(streamfile, "%s\n", jbs->buf);
+                jbuf_free(jbs);
+                return 0;
+        }
+
+        //if header has a list.....
+        en = json_value_find(e, dataline.listkey);
+        //if data has no list
+        if (en == NULL){
+                msglog(LDMSD_LDEBUG, PNAME ": no match for %s\n", dataline.listkey);
+                //write out just the singleton line and  empty vals for the dict items
+                for (i = 0; i < dataline.ndict-1; i++){
+                        jbs = jbuf_append_str(jbs, ",");
+                }
+                fprintf(streamfile, "%s\n", jbs->buf);
+                jbuf_free(jbs);
+                return 0;
+        }
+
+        //if we got the val, but its not a list
+        if (en->type != JSON_LIST_VALUE){
+                msglog(LDMSD_LERROR, PNAME ": %s is not a LIST type %s. skipping this data.\n",
+                       dataline.listkey, json_type_name(en->type));
+                //TODO: this is bad. currently writing out nothing
+                jbuf_free(jbs);
+                return -1;
+        }
+
+        //if there are no dicts
+        if (json_item_first(en) == NULL){
+                for (i = 0; i < dataline.ndict-1; i++){
+                        jbs = jbuf_append_str(jbs, ",");
+                }
+                fprintf(streamfile, "%s\n", jbs->buf);
+                jbuf_free(jbs);
+                return 0;
+        }
+                
+        //if there are dicts
+        for (li = json_item_first(en); li; li = json_item_next(li)){
+                if (li->type != JSON_DICT_VALUE){
+                        msglog(LDMSD_LERROR,
+                               PNAME ": LIST %s has innards that are not a DICT type %s. skipping this data.\n",
+                               dataline.listkey, json_type_name(li->type));
+                        //no output
+                        jbuf_free(jbs);
+                        return -1;
+                }
+
+                //each dict will be its own line
+                msglog(LDMSD_LDEBUG, PNAME ": beginning of dict\n");
+                jb = jbuf_new();
+                jb = jbuf_append_str(jb, "%s", jbs->buf); 
+                for (i = 0; i < dataline.ndict; i++){
+                        json_entity_t edict = json_value_find(li, dataline.dictkey[i]);
+                        if (edict == NULL){
+                                msglog(LDMSD_LDEBUG,
+                                       PNAME ": NULL return from find for key <%s>\n",
+                                       dataline.dictkey[i]);
+                                //print nothing
+                        } else {
+                                rc = _print_singleton(edict, jb);
+                                if (rc){
+                                        msglog(LDMSD_LDEBUG, PNAME ": Cannot print data because of a variable print problem\n");
+                                        jbuf_free(jbs);
+                                        jbuf_free(jb);
+                                        return rc;
+                                }                                
+                        }
+                        if (i < (dataline.ndict-1)) {
+                                jb = jbuf_append_str(jb, ",");
+                        }
+                }
+                msglog(LDMSD_LDEBUG, PNAME ": end of dict\n");
+                fprintf(streamfile, "%s\n", jb->buf);
+                jbuf_free(jb);
+
+        }
+        jbuf_free(jbs);
+
+        return 1;
+}
 
 
 static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
@@ -315,13 +488,14 @@ static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
 		     const char *msg, size_t msg_len,
 		     json_entity_t e) {
 
+        int iheaderkey = 0;
+        int rc = 0;
+	int i = 0;
+
 
 	msglog(LDMSD_LDEBUG, PNAME ": Calling stream_cb. msg '%s'\n", msg);
 	pthread_mutex_lock(&store_lock);
 
-	int rc = 0;
-	int i = 0;
-	
 	if (!streamfile){
 		msglog(LDMSD_LERROR, PNAME ": Cannot insert values for '%s': file is NULL\n",
 		       streamfile);
@@ -351,73 +525,20 @@ static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
 		}
 
                 if (!validheader){
-                        rc = _get_header_from_data(e);
+                        jbuf_t jb = jbuf_new();
+                        rc = _get_header_from_data(e, jb); 
                         if (rc != 0) {
                                 msglog(LDMSD_LDEBUG, PNAME ": error processing header from data <%d>\n", rc);
+                                jbuf_free(jb);
                                 goto out;
                         }
+                        fprintf(streamfile, "%s\n", jb->buf);
+                        fflush(streamfile);
+                        fsync(fileno(streamfile));
+                        jbuf_free(jb);
                 }
-        }
-                
-#if 0
 
-                
-                msglog(LDMSD_LDEBUG, PNAME ": numkeys %d\n", numkeys);
-                for (i = 0; i < numkeys; i++){
-                        //how many attr in this entity?
-                        json_entity_t en = json_value_find(e, keyarray[i]);
-                        if (en == NULL){
-                                msglog(LDMSD_LDEBUG, PNAME ": NULL return from find for key <%s>\n",
-                                       keyarray[i]);
-                                //print nothing
-                        } else {
-                                msglog(LDMSD_LDEBUG, PNAME ": processing key '%d' type '%s'\n",
-                                       i, json_type_name(en->type));
-                                switch (en->type) {
-                                case JSON_INT_VALUE:
-                                        fprintf(streamfile, "%ld", en->value.int_);
-                                        break;
-                                case JSON_BOOL_VALUE:
-                                        if (en->value.bool_)
-                                                fprintf(streamfile, "%s", "true");
-                                        else
-                                                fprintf(streamfile, "%s", "false");
-                                        break;
-                                case JSON_FLOAT_VALUE:
-                                        fprintf(streamfile, "%f", en->value.double_);
-                                        break;
-                                case JSON_STRING_VALUE:
-                                        fprintf(streamfile, "\"%s\"", en->value.str_->str);
-                                        break;
-                                case JSON_LIST_VALUE:
-                                        //how to handle this?
-                                        //print_list(jb, e);
-                                        fprintf(streamfile, "LDMS_LIST_PRINTME");
-                                        break;
-                                case JSON_DICT_VALUE:
-                                        //how to handle this?
-                                        //print_dict(jb, e);
-                                        fprintf(streamfile, "LDMS_DICT_PRINTME");
-                                        break;
-                                case JSON_NULL_VALUE:
-                                        //how to handle this?
-                                        fprintf(streamfile, "null");
-                                        break;
-                                case JSON_ATTR_VALUE:
-                                        msglog(LDMSD_LERROR, PNAME ": Value should not be ATTR type\n");
-                                        fprintf(streamfile, "LDMS_UNKNOWN");
-                                        break;
-                                default:
-                                        msglog(LDMSD_LDEBUG, PNAME, ": cannot process JSON type '%s'\n",
-                                               json_type_name(en->type));
-                                        fprintf(streamfile, "UNKNOWN");
-                                }
-                        }
-                        if (i < (numkeys-1)){
-                                fprintf(streamfile, ",");
-                        }
-                }
-                fprintf(streamfile, "\n");
+                _print_data_lines(e, streamfile);
                 if (!buffer){
                         fflush(streamfile);
                         fsync(fileno(streamfile));
@@ -427,10 +548,6 @@ static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
 		rc = EINVAL;
 		goto out;
 	}
-#endif
-#if 1
-        rc = -1;
-#endif
 
 out:
 
