@@ -146,6 +146,9 @@ static int _parse_list_for_header(json_entity_t e){
         int idict;
         int i;
 
+        //TODO: if needed for performance reasons, can we eliminate some of the checking and jsut rely on
+        //getting NULL returns when we ask for the actual item that we would want?
+
         //for getting the header, we only care about the first li
         li = json_item_first(e);
         if (li == NULL){
@@ -161,8 +164,8 @@ static int _parse_list_for_header(json_entity_t e){
                 idict = 0;
                 for (di = json_attr_first(li); di; di = json_attr_next(di)){
                         //only allowed singleton entries
-                        msglog(LDMSD_LDEBUG, PNAME ": list %s dict item %d = %s\n",
-                               dataline.listkey, idict, di->value.attr_->name->value.str_->str);
+                        //                        msglog(LDMSD_LDEBUG, PNAME ": list %s dict item %d = %s\n",
+                        //                               dataline.listkey, idict, di->value.attr_->name->value.str_->str);
                         if (i == 1){
                                dataline.dictkey[idict] = strdup(di->value.attr_->name->value.str_->str);
                         }
@@ -185,15 +188,12 @@ static int _parse_list_for_header(json_entity_t e){
 };
 
 static int _get_header_from_data(json_entity_t e, jbuf_t jb){
-        //from the data, builds the header and supporting structs
-        //NOTE: if this comes from the first line then all lists and dict options must be in this line
-        //TODO: would be useful to have an option that sends the header first. In that case, will need to build the structs from it
+        //from the data, builds the header and supporting structs. all lists and dict options must be in this line.
 
         json_entity_t a;
         int isingleton, ilist, iheaderkey;
 	int i, j, rc;
 
-	//TODO: will have to put in a bunch of robustnesss checks
 	//TODO: check for thread safety
 
         _clear_key_info();
@@ -363,8 +363,18 @@ static int _print_data_lines(json_entity_t e, FILE* file){
         int i;
         int rc;
 
+        //TODO: if needed for performance reasons, can we eliminate some of the checking and jsut rely on
+        //getting NULL returns when we ask for the actual item that we would want?
 
-        msglog(LDMSD_LDEBUG, PNAME ": _print_data_lines begin\n");
+#if 1
+        struct timeval tv_prev;
+        struct timeval tv_now;
+        struct timeval tv_diff;
+        gettimeofday(&tv_prev, 0);
+#endif
+
+        msglog(LDMSD_LDEBUG, PNAME ": _print_data_lines begin\n");        
+        
         ilines = 0;
         iheaderkey = 0;
 
@@ -374,12 +384,12 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                 for (i = 0; i < dataline.nsingleton; i++){
                         en = json_value_find(e, dataline.singletonkey[i]);
                         if (en == NULL){
-                                msglog(LDMSD_LDEBUG, PNAME ": NULL return from find for key <%s>\n",
-                                       dataline.singletonkey[i]);
+                                //                                msglog(LDMSD_LDEBUG, PNAME ": NULL return from find for key <%s>\n",
+                                //                                       dataline.singletonkey[i]);
                                 //this might be ok..
                         } else {
-                                msglog(LDMSD_LDEBUG, PNAME ": processing key '%d' type '%s'\n",
-                                       i, json_type_name(en->type));
+                                //                                msglog(LDMSD_LDEBUG, PNAME ": processing key '%d' type '%s'\n",
+                                //                                       i, json_type_name(en->type));
                                 rc = _print_singleton(en, jbs);
                                 if (rc){
                                         msglog(LDMSD_LDEBUG, PNAME ": Cannot print data because of a variable print problem\n");
@@ -449,7 +459,7 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                 }
 
                 //each dict will be its own line
-                msglog(LDMSD_LDEBUG, PNAME ": beginning of dict\n");
+                //                msglog(LDMSD_LDEBUG, PNAME ": beginning of dict\n");
                 jb = jbuf_new();
                 jb = jbuf_append_str(jb, "%s", jbs->buf); 
                 for (i = 0; i < dataline.ndict; i++){
@@ -472,12 +482,19 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                                 jb = jbuf_append_str(jb, ",");
                         }
                 }
-                msglog(LDMSD_LDEBUG, PNAME ": end of dict\n");
+                //                msglog(LDMSD_LDEBUG, PNAME ": end of dict\n");
                 fprintf(streamfile, "%s\n", jb->buf);
                 jbuf_free(jb);
 
         }
         jbuf_free(jbs);
+
+
+#if 1
+        gettimeofday(&tv_now, 0);
+        timersub(&tv_now, &tv_prev, &tv_diff);
+        msglog(LDMSD_LDEBUG, PNAME ": print_lines duration %f\n", (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
+#endif        
 
         return 1;
 }
