@@ -70,10 +70,10 @@
 
 /**
  * CURRENT GROUND RULES:
- * 1) the json will be something like: {foo:1, bar:2, zed-data:[{count:1, name:xyz},{count:2, name:abc}], zed2:[{time:0, count:2}]}}
+ * 1) the json will be something like: {foo:1, bar:2, zed-data:[{count:1, name:xyz},{count:2, name:abc}]}
  * 2) can get this at the beginning and assume it will be true for all time
- * 3) can have a list with no entries
- * 4) there will be exactly 1 dict
+ * 3) there will be at most 1 list
+ * 4) can have a list with no entries
  * 5) In the writeout, each dict will be in its own csv line with the singletons
  * 6) one stream only
  */
@@ -194,7 +194,7 @@ static int _get_header_from_data(json_entity_t e, jbuf_t jb){
         int isingleton, ilist, iheaderkey;
 	int i, j, rc;
 
-	//TODO: check for thread safety
+	//TODO: check for thread safety. check the locks
 
         _clear_key_info();
         
@@ -484,6 +484,7 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                 }
                 //                msglog(LDMSD_LDEBUG, PNAME ": end of dict\n");
                 fprintf(streamfile, "%s\n", jb->buf);
+                ilines++; //note only this case is being counted
                 jbuf_free(jb);
 
         }
@@ -491,9 +492,10 @@ static int _print_data_lines(json_entity_t e, FILE* file){
 
 
 #if 1
+        //note only if you get here is time counted
         gettimeofday(&tv_now, 0);
         timersub(&tv_now, &tv_prev, &tv_diff);
-        msglog(LDMSD_LDEBUG, PNAME ": print_lines duration %f\n", (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
+        msglog(LDMSD_LDEBUG, PNAME ": print_lines %d duration %f\n", ilines, (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
 #endif        
 
         return 1;
