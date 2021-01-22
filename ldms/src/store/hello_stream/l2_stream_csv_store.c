@@ -96,6 +96,7 @@ static ldmsd_msg_log_f msglog;
 static char* root_path;
 static char* container;
 static char* schema;
+static unsigned long tsconfig;
 FILE* streamfile;
 static char* streamfile_name;
 static pthread_mutex_t cfg_lock;
@@ -495,7 +496,7 @@ static int _print_data_lines(json_entity_t e, FILE* file){
         //note only if you get here is time counted
         gettimeofday(&tv_now, 0);
         timersub(&tv_now, &tv_prev, &tv_diff);
-        msglog(LDMSD_LDEBUG, PNAME ": print_lines %d duration %f\n", ilines, (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
+        msglog(LDMSD_LINFO, PNAME ": print_lines %d duration %f\n", ilines, (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
 #endif        
 
         return 1;
@@ -542,6 +543,9 @@ static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
 			rc = EINVAL;
 			goto out;
 		}
+
+                //testing
+                msglog(LDMSD_LDEBUG, PNAME ": type is %s\n", json_type_name(e->type));
 
                 if (!validheader){
                         jbuf_t jb = jbuf_new();
@@ -593,7 +597,8 @@ static int reopen_container(){
 		return 0;
 	}
 
-	size_t pathlen = strlen(root_path) + strlen(schema) + strlen(container) + 8;
+        // add additional 12 for the timestamp
+	size_t pathlen = strlen(root_path) + strlen(schema) + strlen(container) + 8 + 12;
 	path = malloc(pathlen);
 	if (!path){
 		rc = ENOMEM;
@@ -606,7 +611,7 @@ static int reopen_container(){
 		rc = ENOMEM;
 		goto out;
 	}
-	sprintf(path, "%s/%s/%s", root_path, container, schema);
+	sprintf(path, "%s/%s/%s-%lu", root_path, container, schema, tsconfig);
 	sprintf(dpath, "%s/%s", root_path, container);
 	streamfile_name = strdup(path);
 
@@ -701,6 +706,7 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl, struct
 		msglog(LDMSD_LDEBUG, PNAME ": setting container to '%s'\n", container);
 	}
 
+        tsconfig = (unsigned long)(time(NULL));
 	rc = reopen_container();
 	if (rc) {
 		msglog(LDMSD_LERROR, PNAME ": Error opening %s/%s/%s\n",
