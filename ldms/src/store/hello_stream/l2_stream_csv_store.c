@@ -115,6 +115,8 @@ struct linedata {
 static struct linedata dataline;
 static int validheader = 0;
 static int buffer = 0;
+static int temp_count = 0;
+
 
 static void _clear_key_info(){
         int i, j;
@@ -309,6 +311,7 @@ static int _get_header_from_data(json_entity_t e, jbuf_t jb){
                         jb = jbuf_append_str(jb, "%s:%s", dataline.listkey, dataline.dictkey[i]);
                 }
         }
+        jb = jbuf_append_str(jb, ",store_recv_time");
         validheader = 1;
                 
         return 0;
@@ -367,14 +370,12 @@ static int _print_data_lines(json_entity_t e, FILE* file){
         //TODO: if needed for performance reasons, can we eliminate some of the checking and jsut rely on
         //getting NULL returns when we ask for the actual item that we would want?
 
-#if 1
         struct timeval tv_prev;
         struct timeval tv_now;
         struct timeval tv_diff;
         gettimeofday(&tv_prev, 0);
-#endif
 
-        msglog(LDMSD_LDEBUG, PNAME ": _print_data_lines begin\n");        
+        //        msglog(LDMSD_LDEBUG, PNAME ": _print_data_lines begin\n");        
         
         ilines = 0;
         iheaderkey = 0;
@@ -410,7 +411,8 @@ static int _print_data_lines(json_entity_t e, FILE* file){
         //for each dict, write a separate line in the file
         //if header has no list or an empty list, just write the singletons
         if (dataline.nlist == 0){
-                fprintf(streamfile, "%s\n", jbs->buf);
+                //                msglog(LDMSD_LDEBUG, PNAME ": no list\n");
+                fprintf(streamfile, "%s,%f\n", jbs->buf, (tv_prev.tv_sec + tv_prev.tv_usec/1000000.0));
                 jbuf_free(jbs);
                 return 0;
         }
@@ -424,7 +426,7 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                 for (i = 0; i < dataline.ndict-1; i++){
                         jbs = jbuf_append_str(jbs, ",");
                 }
-                fprintf(streamfile, "%s\n", jbs->buf);
+                fprintf(streamfile, "%s,%f\n", jbs->buf, (tv_prev.tv_sec + tv_prev.tv_usec/1000000.0));
                 jbuf_free(jbs);
                 return 0;
         }
@@ -443,7 +445,7 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                 for (i = 0; i < dataline.ndict-1; i++){
                         jbs = jbuf_append_str(jbs, ",");
                 }
-                fprintf(streamfile, "%s\n", jbs->buf);
+                fprintf(streamfile, "%s,%f\n", jbs->buf, (tv_prev.tv_sec + tv_prev.tv_usec/1000000.0));
                 jbuf_free(jbs);
                 return 0;
         }
@@ -484,20 +486,25 @@ static int _print_data_lines(json_entity_t e, FILE* file){
                         }
                 }
                 //                msglog(LDMSD_LDEBUG, PNAME ": end of dict\n");
-                fprintf(streamfile, "%s\n", jb->buf);
+                fprintf(streamfile, "%s,%f\n", jb->buf, (tv_prev.tv_sec + tv_prev.tv_usec/1000000.0));
                 ilines++; //note only this case is being counted
                 jbuf_free(jb);
 
         }
         jbuf_free(jbs);
 
-
-#if 1
         //note only if you get here is time counted
         gettimeofday(&tv_now, 0);
         timersub(&tv_now, &tv_prev, &tv_diff);
-        msglog(LDMSD_LINFO, PNAME ": print_lines %d duration %f\n", ilines, (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
-#endif        
+        //        msglog(LDMSD_LINFO, PNAME ": print_lines %d duration %f\n", ilines, (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
+        //        fprintf(streamfile, "#print_lines %f duration %f\n", ilines, (tv_diff.tv_sec + tv_diff.tv_usec/1000000.0));
+
+
+        temp_count++;
+        if ((temp_count % 10000) == 0){
+                msglog(LDMSD_LINFO, PNAME " %d lines timestamp %f\n",
+                       temp_count, (tv_now.tv_sec + tv_now.tv_usec/1000000.0));
+        }
 
         return 1;
 }
@@ -526,10 +533,10 @@ static int stream_cb(ldmsd_stream_client_t c, void *ctxt,
 	// msg will be populated. if the type was json, entity will also be populated.
 	if (stream_type == LDMSD_STREAM_STRING){
 		fprintf(streamfile, "%s\n", msg);
-		if (!buffer){
-			fflush(streamfile);
+                if (!buffer){
+                        fflush(streamfile);
 			fsync(fileno(streamfile));
-		}
+                }
 	} else if (stream_type == LDMSD_STREAM_JSON){
 		if (!e){
 			msglog(LDMSD_LERROR, PNAME ": why is entity NULL?\n");
