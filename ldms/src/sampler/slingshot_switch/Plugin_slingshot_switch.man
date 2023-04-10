@@ -1,0 +1,72 @@
+.\" Manpage for Plugin_slingshot_switch
+.\" Contact ovis-help@ca.sandia.gov to correct errors or typos.
+.TH man 7 "17 Apr 2023" "v4" "LDMS Plugin slingshot_switch man page"
+
+.SH NAME
+Plugin_slingshot_switch - man page for the LDMS slingshot_switch plugin
+
+.SH SYNOPSIS
+Within ldmsd_controller or a configuration file:
+.br
+config name=slingshot_switch [ <attr> = <value> ]
+
+.SH DESCRIPTION
+With LDMS (Lightweight Distributed Metric Service), plugins for the ldmsd (ldms
+daemon) are configured via ldmsd_controller or a configuration file. The
+slingshot_switch plugin uses LDMS_V_LIST and LDMS_V_RECORD to provide slingshot
+switch info via the dump_counters command run on the switch.
+
+.SH CONFIGURATION ATTRIBUTE SYNTAX
+The slingshot_switch plugin uses the sampler_base base class. This man page covers
+only the configuration attributes, or those with default values, specific to the
+this plugin; see ldms_sampler_base.man for the attributes of the base class.
+
+.TP
+.BR config
+name=<plugin_name>
+.br
+configuration line
+.RS
+.TP
+name=<plugin_name>
+.br
+This MUST be slingshot_switch.
+.TP
+conffile=<conffile>
+.br
+Configuration file. First line must be "n=XXX" or "p=XXX,YYY,ZZZ".
+p does not support ranges. Then variables or groups are listed one
+per line. Comments lines can be in the file designated by the first line
+being a '#'.
+
+Arguments are those of dump_counters.
+.TP
+schema=<schema>
+.br
+Optional schema name. It is intended that the same sampler on different nodes
+with different metrics have a different schema. If not specified, will
+default to `slingshot_switch`.
+.RE
+
+.SH BUGS
+This is still under development
+
+.SH EXAMPLES
+.PP
+Within ldmsd_controller or a configuration file:
+.nf
+load name=slingshot_switch
+config name=slingshot_switch producer=vm1_1 instance=vm1_1/slingshot_switch conffile=/home/confffile.txt
+start name=slingshot_switch interval=1000000 offset=0
+.fi
+.PP
+Where conffile.txt looks something like:
+.nf
+n=65
+cfrx
+#This is a comment
+.fi
+
+
+.SH SEE ALSO
+ldmsd(8), ldms_quickstart(7), ldmsd_controller(8), ldms_sampler_base(7)
