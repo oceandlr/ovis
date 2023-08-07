@@ -2,8 +2,8 @@ dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.64)
 AC_INIT([ovis-ldms],
-        m4_esyscmd([config/git-version-gen --prefix 'OVIS-' .tarball-version]),
-        [ovis-help@sandia.gov])
+	m4_esyscmd([config/git-version-gen --prefix 'OVIS-' .tarball-version]),
+	[ovis-help@sandia.gov])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR([m4/Ovis-top.m4])
 AC_CONFIG_AUX_DIR(config)
@@ -164,7 +164,7 @@ dnl we need libibverbs-devel and librdmacm-devel to support rdma
     AC_CHECK_HEADER([infiniband/verbs.h],
     [ AC_DEFINE([HAVE_VERBS_H] , [1], [Define to 1 if you have infiniband/verbs.h.])
 	IBVERBS_ENUM_CHECK([ibvwct_enums])
-        if test "$ibvwct_enums" = "1"; then
+	if test "$ibvwct_enums" = "1"; then
 		AC_DEFINE([HAVE_VERBS_IBVWCT_ENUMS], [1],
 		[Defined to 1 if you have IBV_WC_T* enum values in verbs.h.])
 	fi
@@ -173,7 +173,7 @@ dnl we need libibverbs-devel and librdmacm-devel to support rdma
 
     AC_CHECK_HEADER([rdma/rdma_cma.h],
     [AC_DEFINE([HAVE_RDMA_CMA_H], [1],
-               [Define to 1 if you have rdma/rdma_cma.h.])],
+	       [Define to 1 if you have rdma/rdma_cma.h.])],
     [AC_MSG_ERROR([Missing header. librdmacm-devel not installed?])])
   fi
   if test "$enable_ugni" = "yes"; then
@@ -242,15 +242,15 @@ dnl Options for contributed stores
 OPTION_DEFAULT_DISABLE([tutorial-store],[ENABLE_TUTORIAL_STORE])
 
 AC_ARG_ENABLE([timescale-store],
-        [AS_HELP_STRING([--enable-timescale-store], [enable timescaledb store plugin])],
-        [],
-        [enable_timescale_store="check"])
+	[AS_HELP_STRING([--enable-timescale-store], [enable timescaledb store plugin])],
+	[],
+	[enable_timescale_store="check"])
 AS_IF([test "x$enable_timescale_store" != xno ],[
-        AC_LIB_HAVE_LINKFLAGS([pq], [], [#include <libpq-fe.h>])
-        AS_IF([test "x$enable_timescale_store" != xcheck],[
-                AS_IF([test "x$HAVE_LIBPQ" = xno],
-                        [AC_MSG_ERROR([libpq or headers not found])])
-        ])
+	AC_LIB_HAVE_LINKFLAGS([pq], [], [#include <libpq-fe.h>])
+	AS_IF([test "x$enable_timescale_store" != xcheck],[
+		AS_IF([test "x$HAVE_LIBPQ" = xno],
+			[AC_MSG_ERROR([libpq or headers not found])])
+	])
 ])
 AM_CONDITIONAL([ENABLE_TIMESCALE_STORE], [test "x$HAVE_LIBPQ" = xyes])
 
@@ -275,19 +275,19 @@ AC_ARG_ENABLE([store-avro-kafka],
     [enable_store_avro_kafka="check"])
 AS_IF([test "x$enable_store_avro_kafka" != xno],[
     AS_IF([test "x$HAVE_LIBRDKAFKA" = xno],[
-        AS_IF([test "x$enable_store_avro_kafka" = xyes],
-            [AC_MSG_ERROR([store_avro_kafka requires librdkakfa])],
-            [enable_store_avro_kafka="no"])
+	AS_IF([test "x$enable_store_avro_kafka" = xyes],
+	    [AC_MSG_ERROR([store_avro_kafka requires librdkakfa])],
+	    [enable_store_avro_kafka="no"])
     ])
     AS_IF([test "x$HAVE_LIBAVRO" = xno],[
-        AS_IF([test "x$enable_store_avro_kafka" = xyes],
-            [AC_MSG_ERROR([store_avro_kafka requires libavro])],
-            [enable_store_avro_kafka="no"])
+	AS_IF([test "x$enable_store_avro_kafka" = xyes],
+	    [AC_MSG_ERROR([store_avro_kafka requires libavro])],
+	    [enable_store_avro_kafka="no"])
     ])
     AS_IF([test "x$HAVE_LIBSERDES" = xno],[
-        AS_IF([test "x$enable_store_avro_kafka" = xyes],
-            [AC_MSG_ERROR([store_avro_kafka requires libserdes])],
-            [enable_store_avro_kafka="no"])
+	AS_IF([test "x$enable_store_avro_kafka" = xyes],
+	    [AC_MSG_ERROR([store_avro_kafka requires libserdes])],
+	    [enable_store_avro_kafka="no"])
     ])
 ])
 AM_CONDITIONAL([ENABLE_STORE_AVRO_KAFKA], [test "x$enable_store_avro_kafka" != xno])
@@ -373,14 +373,14 @@ AC_ARG_ENABLE([variorum],
     [enable_variorum="check"])
 AS_IF([test "x$enable_variorum" != xno],[
     AC_LIB_HAVE_LINKFLAGS([variorum], [], [#include <variorum.h>
-                           #include <variorum_topology.h>])
+			   #include <variorum_topology.h>])
     AS_IF([test "x$enable_variorum" != xcheck],[
-        AS_IF([test "x$HAVE_LIBVARIORUM" = xno],
-            [AC_MSG_ERROR([libvariorum or headers not found])])
+	AS_IF([test "x$HAVE_LIBVARIORUM" = xno],
+	    [AC_MSG_ERROR([libvariorum or headers not found])])
     ])
     AS_IF([test "x$enable_variorum" != xcheck],[
-        AS_IF([test "x$HAVE_LIBJANSSON" = xno],
-            [AC_MSG_ERROR([libjansson or headers not found])])
+	AS_IF([test "x$HAVE_LIBJANSSON" = xno],
+	    [AC_MSG_ERROR([libjansson or headers not found])])
     ])
 ])
 AM_CONDITIONAL([ENABLE_VARIORUM_SAMPLER], [test "x$enable_variorum" != no -a "x$HAVE_LIBVARIORUM" = xyes -a "x$HAVE_LIBJANSSON" = xyes])
@@ -495,12 +495,12 @@ if test -z "$ENABLE_KOKKOS_TRUE"; then
 	CHECK_SOS=1
 fi
 if test -z "$ENABLE_DARSHAN_TRUE"; then
-        dnl darshan needs sos (not the storesos).
-        CHECK_SOS=1
+	dnl darshan needs sos (not the storesos).
+	CHECK_SOS=1
 fi
 if test -z "$ENABLE_PROC_STREAMS_TRUE"; then
-        dnl linux_proc_sampler stream stores need sos
-        CHECK_SOS=1
+	dnl linux_proc_sampler stream stores need sos
+	CHECK_SOS=1
 fi
 if test -z "$ENABLE_STORE_APP_TRUE"; then
 	dnl kokkos needs sos (not the storesos).
@@ -554,34 +554,34 @@ LIBS=$TMPLIBS
 dnl GEOPM telemetry support
 AC_MSG_CHECKING([for GEOPM telemetry library])
 AC_ARG_WITH([geopm],
-        [AS_HELP_STRING([--with-geopm],
-                [build GEOPM telemetry sampler @<:@default=check@:>@])],
-                [AS_IF([test "x$withval" != xyes -a "x$withval" != xno],
-                        [GEOPM_CFLAGS="-I$withval/include"
-                         GEOPM_LDFLAGS="-L$withval/lib64 -L$withval/lib"]
-                )],
-        [with_geopm=check])
+	[AS_HELP_STRING([--with-geopm],
+		[build GEOPM telemetry sampler @<:@default=check@:>@])],
+		[AS_IF([test "x$withval" != xyes -a "x$withval" != xno],
+			[GEOPM_CFLAGS="-I$withval/include"
+			 GEOPM_LDFLAGS="-L$withval/lib64 -L$withval/lib"]
+		)],
+	[with_geopm=check])
 have_geopm=no
 AC_SUBST([GEOPM_CFLAGS])
 AC_SUBST([GEOPM_LDFLAGS])
 AS_IF([test "x$with_geopm" != xno], [
-        save_LDFLAGS=$LDFLAGS
-        LDFLAGS="$LDFLAGS $GEOPM_LDFLAGS"
-        save_CFLAGS=$CFLAGS
-        CFLAGS="$CFLAGS $GEOPM_CFLAGS"
-        save_CPPFLAGS=$CPPFLAGS
-        CPPFLAGS="$CPPFLAGS $GEOPM_CFLAGS"
-        AC_CHECK_HEADER(geopm_pio.h, [have_geopm=yes], [have_geopm=no])
-        AC_CHECK_HEADER(geopm_topo.h, [have_geopm=yes], [have_geopm=no])
-        AC_CHECK_LIB([geopmd], [geopm_pio_push_signal], [have_geopm=yes], [have_geopm=no])
-        AC_CHECK_LIB([geopmd], [geopm_pio_reset], [have_geopm=yes], [have_geopm=no])
-        CPPFLAGS=$save_CPPFLAGS
-        CFLAGS=$save_CFLAGS
-        LDFLAGS=$save_LDFLAGS
+	save_LDFLAGS=$LDFLAGS
+	LDFLAGS="$LDFLAGS $GEOPM_LDFLAGS"
+	save_CFLAGS=$CFLAGS
+	CFLAGS="$CFLAGS $GEOPM_CFLAGS"
+	save_CPPFLAGS=$CPPFLAGS
+	CPPFLAGS="$CPPFLAGS $GEOPM_CFLAGS"
+	AC_CHECK_HEADER(geopm_pio.h, [have_geopm=yes], [have_geopm=no])
+	AC_CHECK_HEADER(geopm_topo.h, [have_geopm=yes], [have_geopm=no])
+	AC_CHECK_LIB([geopmd], [geopm_pio_push_signal], [have_geopm=yes], [have_geopm=no])
+	AC_CHECK_LIB([geopmd], [geopm_pio_reset], [have_geopm=yes], [have_geopm=no])
+	CPPFLAGS=$save_CPPFLAGS
+	CFLAGS=$save_CFLAGS
+	LDFLAGS=$save_LDFLAGS
 ])
 AM_CONDITIONAL([ENABLE_GEOPM_SAMPLER], [test x$have_geopm = xyes])
 AM_COND_IF([ENABLE_GEOPM_SAMPLER],[
-        AC_DEFINE([ENABLE_GEOPM_SAMPLER], [], [Build GEOPM telemetry sampler])
+	AC_DEFINE([ENABLE_GEOPM_SAMPLER], [], [Build GEOPM telemetry sampler])
 ])
 AC_MSG_RESULT([$with_geopm])
 
@@ -757,7 +757,7 @@ AS_IF([test "x$want_python" != xno], [
 		 AX_PYTHON_MODULE_VERSION(["argparse"], 1.1, "python")
 		 python_found=true
 		 CYTHON_CHECK([0.25], [$PYTHON_VERSION],
-		 	[cython_found=true], [cython_found=false])],
+			[cython_found=true], [cython_found=false])],
 		[python_found=false
 		 cython_found=false])
 
@@ -867,12 +867,12 @@ AC_ARG_WITH([dcgm],
 LIBDCGM=
 AS_IF([test "x$with_dcgm" != xno],
       [AC_CHECK_LIB([dcgm], [dcgmInit],
-         [have_dcgm=true],
-         [have_dcgm=false
-          if test "x$with_dcgm" != xcheck; then
-            AC_MSG_FAILURE([--with-dcgm was given, but test for dcgm failed])
-          fi
-         ])],
+	 [have_dcgm=true],
+	 [have_dcgm=false
+	  if test "x$with_dcgm" != xcheck; then
+	    AC_MSG_FAILURE([--with-dcgm was given, but test for dcgm failed])
+	  fi
+	 ])],
       [have_dcgm=false])
 AM_CONDITIONAL([HAVE_DCGM], [test x$have_dcgm = xtrue])
 
@@ -891,8 +891,14 @@ AC_ARG_ENABLE([slingshot],
 AM_CONDITIONAL([ENABLE_SLINGSHOT], [test "x$enable_slingshot" != xno])
 AS_IF([test "x$enable_slingshot" = xyes],[
     AS_IF([test "x$HAVE_LIBCXI" = xno],
-        [AC_MSG_ERROR([libcxi or its headers not found])])
+	[AC_MSG_ERROR([libcxi or its headers not found])])
 ])
+
+AC_ARG_ENABLE([slingshot_switch],
+    [AS_HELP_STRING([--enable-slingshot_switch], [require the slinghost on-switch plugins @<:@default=check@:>@])],
+    [],
+    [enable_slingshot_switch="check"])
+AM_CONDITIONAL([ENABLE_SLINGSHOT_SWITCH], [test "x$enable_slingshot_switch" != xno])
 
 # define substitutions for configvars and other sed-generated files.
 # note carefully the escapes.
@@ -1050,6 +1056,7 @@ ldms/src/sampler/syspapi/Makefile
 ldms/src/sampler/app_sampler/Makefile
 ldms/src/sampler/slingshot_metrics/Makefile
 ldms/src/sampler/slingshot_info/Makefile
+ldms/src/sampler/slingshot_switch/Makefile
 ldms/src/sampler/json/Makefile
 ldms/src/sampler/hweventpapi/Makefile \
 ldms/src/sampler/rapl/Makefile \

@@ -1,0 +1,95 @@
+\" Manpage for Plugin_slingshot_switch
+.\" Contact ovis-help@ca.sandia.gov to correct errors or typos.
+.TH man 7 "8 Aug 2023" "v4" "LDMS Plugin slingshot_switch man page"
+
+.SH NAME
+Plugin_slingshot_switch - man page for the LDMS slingshot_switch plugin
+
+.SH SYNOPSIS
+Within ldmsd_controller or a configuration file:
+.br
+config name=slingshot_switch [ <attr> = <value> ]
+
+.SH DESCRIPTION
+With LDMS (Lightweight Distributed Metric Service), plugins for the ldmsd (ldms
+daemon) are configured via ldmsd_controller or a configuration file. The
+slingshot_switch plugin uses LDMS_V_LIST and LDMS_V_RECORD to provide slingshot
+switch info via the dump_counters command run on the switch.
+
+slingshot_switch and slingshot_switch_1 are the same plugins. There are two copies
+to enable sampling at two different rates.
+
+.SH CONFIGURATION ATTRIBUTE SYNTAX
+The slingshot_switch plugin uses the sampler_base base class. This man page covers
+only the configuration attributes, or those with default values, specific to the
+this plugin; see ldms_sampler_base.man for the attributes of the base class.
+
+.TP
+.BR config
+name=<plugin_name>
+.br
+configuration line
+.RS
+.TP
+name=<plugin_name>
+.br
+This MUST be slingshot_switch (or slingshot_switch_1).
+.TP
+conffile=<conffile>
+.br
+Configuration file. First non-comment line must be "n=XXX" or "p=XXX,YYY,ZZZ".
+p does not support ranges. Then variables or groups are listed one
+per line. Comments lines can be in the file designated by the first line
+being a '#'.
+
+Arguments are those of dump_counters.
+.TP
+schema=<schema>
+.br
+Optional schema name. It is intended that the same sampler on different nodes
+with different metrics have a different schema. If not specified, will
+default to `slingshot_switch` (or `slingshot_switch_1`).
+.RE
+
+.SH BUGS (and future enhancements)
+\[bu] This is still under development.
+
+\[bu] Does not yet support ranges for the ports.
+
+\[bu] Does not check for duplicate ports.
+
+\[bu] Could have more robust handling of errors in the config file.
+
+\[bu] MAX Ports is 70.
+
+\[bu] Possibly can reduce unnecessary allocations in schema_metric_list.
+
+\[bu] DEBUG messages are excessive, while this is in development.
+
+\[bu] Need to check for extra whitespace in variable names.
+
+\[bu] Only checking for the expected number of data output lines. Note that the output has at least one extra line.
+
+
+.SH EXAMPLES
+.PP
+Within ldmsd_controller or a configuration file:
+.nf
+load name=slingshot_switch
+config name=slingshot_switch producer=vm1_1 instance=vm1_1/slingshot_switch conffile=/home/confffile.txt
+start name=slingshot_switch interval=1000000 offset=0
+.fi
+or the above with `slingshot_switch_1`.
+.PP
+Where conffile.txt looks something like:
+.nf
+#This can be a leading comment(s)
+n=65
+# This can be an interspersed comment(s)
+cfrx
+#This is yet another comment(s)
+.fi
+
+
+.SH SEE ALSO
+ldmsd(8), ldms_quickstart(7), ldmsd_controller(8), ldms_sampler_base(7)
