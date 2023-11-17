@@ -1,6 +1,6 @@
 \" Manpage for Plugin_slingshot_switch
 .\" Contact ovis-help@ca.sandia.gov to correct errors or typos.
-.TH man 7 "8 Aug 2023" "v4" "LDMS Plugin slingshot_switch man page"
+.TH man 7 "17 Nov 2023" "v4" "LDMS Plugin slingshot_switch man page"
 
 .SH NAME
 Plugin_slingshot_switch - man page for the LDMS slingshot_switch plugin
@@ -73,15 +73,15 @@ default to `slingshot_switch` (or `slingshot_switch_1`).
 
 .SH EXAMPLES
 .PP
-Within ldmsd_controller or a configuration file:
+1) Within ldmsd_controller or a configuration file:
 .nf
 load name=slingshot_switch
 config name=slingshot_switch producer=vm1_1 instance=vm1_1/slingshot_switch conffile=/home/confffile.txt
 start name=slingshot_switch interval=1000000 offset=0
 .fi
 or the above with `slingshot_switch_1`.
-.PP
-Where conffile.txt looks something like:
+
+conffile.txt can look something like:
 .nf
 #This can be a leading comment(s)
 n=65
@@ -90,6 +90,42 @@ cfrx
 #This is yet another comment(s)
 .fi
 
+.PP
+2) For confile sampler_ss.conf:
+.nf
+env SWITCH=$(hostname)
+env COMPONENT_ID=1
+
+load name=slingshot_switch
+config name=slingshot_switch producer=${SWITCH} component_id=${COMPONENT_ID} instance=${SWITCH}/port_metrics conffile=/rwfs/OVIS_slingshot-4.4.1/etc/ldms/slingshot_ldms_1s.txt
+start name=slingshot_switch interval=1000000
+.fi
+
+with slingshot_ldms_1s.txt:
+.nf
+p=0,1,2,3
+rfc_3635
+.fi
+
+Command line to start ldmsd using the above:
+.nf
+/rwfs/OVIS_slingshot-4.4.1/etc/ldms# ldmsd -x sock:411 -c /rwfs/OVIS_slingshot-4.4.1/etc/ldms/sampler_ss.conf -m 2M -v QUIET
+.fi
+
+Then ldms_ls output:
+.nf
+x3000c0r42b0/port_metrics1: consistent, last update: Fri Nov 17 17:24:08 2023 +0000 [23292us]
+M u64        component_id                               1
+D u64        job_id                                     0
+D u64        app_id                                     0
+M record_type slingshot_port                             LDMS_V_RECORD_TYPE
+D list<>     slingshot_port_list
+  port (x) IfInDiscards (x) IfInErrors (x) IfInUnknownProtos (x) IfOutDiscards (x) IfOutErrors (x) Dot3HCInPauseFrames (x) Dot3HCOutPauseFrames (x) IfHCInOctets (x) IfHCInUcastPkts (x) IfHCInMulticastPkts (x) IfHCInBroadcastPkts (x) IfHCOutOctets (x) IfHCOutUcastPkts (x) IfHCOutMulticastPkts (x) IfHCOutBroadcastPkts (x)
+	 0       3135102637              0            3135102637                 0               0                       0                        0  147205648261491       2495004354147                    2471                       0        1536216301             20234005                        0                        0
+	 1       3135102637              0            3135102637                 0               0                       0                        0  147204949152872       2494992497033                       0                       0         698442077             10279716                        0                        0
+	 2       3135102637              0            3135102637                 0               0                       0                        0  147205081815556       2494994737508                       0                       0         698345785             10272362                        0                        0
+	 3       3135102637              0            3135102637                 0               0                       0                        0  147205460019681       2495001153446                       0                       0         698845184             10277326                        0                        0
+.fi
 
 .SH SEE ALSO
 ldmsd(8), ldms_quickstart(7), ldmsd_controller(8), ldms_sampler_base(7)
