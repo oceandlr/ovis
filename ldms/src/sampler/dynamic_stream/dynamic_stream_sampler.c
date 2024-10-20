@@ -107,10 +107,15 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         char *buff = NULL;
         char *dyncmd = NULL;
         char *temp = NULL;
-        char *dest = NULL;
-        char *upstream = NULL;
-        char *saveptrd = NULL;
-        char *saveptru = NULL;
+        char* orig = NULL;
+        char* sendon = NULL;
+        char *mydata = NULL;
+        char *myhost = NULL;
+        int myport = -1;
+        char *upstreamdata = NULL;
+        char *upstreamhost = NULL;
+        int upstreamport = -1;
+        char *saveptr = NULL;
 	const char *type = "UNKNOWN";
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
@@ -174,33 +179,62 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                                         msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                                         goto out;
                                 }
+                                orig = strdup(dyncmd);
+                                if (!orig){
+                                        rc = ENOMEM;
+                                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                                        goto out;
+                                }
 
-                                dest = strtok_r(dyncmd, ":", &saveptrd);
-                                if (dest != NULL){
-                                        msglog(LDMSD_LDEBUG, SAMP "'%s' '%s'\n", dest, saveptrd);
-                                        temp = strdup(saveptrd);
-                                        upstream = strtok_r(temp, ":", &saveptru);
-                                        if (upstream != NULL){
-                                                msglog(LDMSD_LINFO,
-                                                       SAMP "(upstream!=NULL) dest='%s' upstream='%s'\n",
-                                                       dest, upstream);
-                                                msglog(LDMSD_LINFO,
-                                                       SAMP "Will be sending on '%s'\n",
-                                                       saveptrd);
+                                mydata = strtok_r(dyncmd, ":", &saveptr);
+                                if (mydata != NULL){
+                                        msglog(LDMSD_LDEBUG, SAMP " mydata='%s' rest='%s'\n", mydata, saveptr);
+                                        sendon = strdup(saveptr);
+                                        temp = strdup(saveptr);
+
+                                        //split mydata
+                                        myhost = strtok_r(mydata, "@", &saveptr);
+                                        if (myhost != NULL){
+                                                myport = atoi(saveptr); //TODO: replace with something that will check with error
+                                                msglog(LDMSD_LDEBUG,
+                                                       SAMP " myhost = 's' myport = '%d'\n",
+                                                       myhost, myport);
                                         } else {
                                                 msglog(LDMSD_LERROR,
-                                                       SAMP " Error Malformed argument: (upstream==NULL) dest='%s' upstream='%s'\n",
-                                                       dest, saveptrd);
-                                                msglog(LDMSD_LERROR, SAMP "Won't be sending on any message.\n");
-                                                rc = -1;
+                                                       SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
+                                                goto out;
+                                        }
+
+                                        //split upstreamdata
+                                        upstreamdata = strtok_r(temp, ":", &saveptr);
+                                        if (upstreamdata != NULL){
+                                                upstreamhost = strtok_r(upstreamdata, "@", &saveptr);
+                                                if (upstreamhost != NULL){
+                                                        upstreamport = atoi(saveptr); //TODO: replace
+                                                } else {
+                                                        msglog(LDMSD_LERROR,
+                                                               SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
+                                                               upstreamdata);
+                                                        goto out;
+                                                }
+                                        } else {
+                                                msglog(LDMSD_LERROR,
+                                                       SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
+                                                       upstreamdata);
                                                 goto out;
                                         }
                                 } else {
-                                        msglog(LDMSD_LERROR, SAMP " Error Malformed argument: dest == NULL.\n");
+                                        msglog(LDMSD_LERROR,
+                                               SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
+                                        goto out;
                                 }
+                        } else {
+                                msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: no upstream list\n");
+                                rc = -1;
+                                goto out;
                         }
                 } else {
-                        msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: no upstream list\n");
+                        msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: no cmd list\n");
                         rc = -1;
                         goto out;
                 }
@@ -213,16 +247,24 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 	break;
 	}
 
+        msglog(LDMSD_LINFO, SAMP " orig string '%s'\n", orig);
+        msglog(LDMSD_LINFO, SAMP " my host = '%s' myport = '%d' upstream host = '%s' upstream port = '%d'\n",
+         myhost, myport, upstreamhost, upstreamport);
+        msglog(LDMSD_LINFO, SAMP " sending on '%s'\n", sendon);
 
+        //START HERE...
         //TODO: NO UNSUBSCRIBING YET...
 
  out:
 
-        if (jp) json_parser_free(jp);
-        if (jdoc) json_entity_free(jdoc);
+
         if (buff) free(buff);
+        if (orig) free(orig);
         if (temp) free(temp);
         if (dyncmd) free(dyncmd);
+        if (sendon) free(sendon);
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
 
         return rc;
 }
@@ -281,7 +323,8 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                         }
                         len = strlen(dynstream);
                         if (!len){
-                                msglog(LDMSD_LERROR, SAMP " Error: invalid stream name '%s'\n", dynstream);
+                                msglog(LDMSD_LERROR,
+                                       SAMP " Error: invalid stream name '%s'\n", dynstream);
                                 rc = -1;
                                 goto out;
                         }
@@ -297,9 +340,11 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                         }
                         dynstream[len] = '\0';
                         msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n", dynstream);
-                        ldmsd_stream_client_t client = ldmsd_stream_subscribe(dynstream, dynamic_stream_recv_cb, myself);
+                        ldmsd_stream_client_t client =
+                                ldmsd_stream_subscribe(dynstream, dynamic_stream_recv_cb, myself);
                         if (!client){
-                                msglog(LDMSD_LERROR, SAMP " cannot subscribe to stream '%s' (might be duplicate)\n",
+                                msglog(LDMSD_LERROR,
+                                       SAMP " cannot subscribe to stream '%s' (might be duplicate)\n",
                                        dynstream);
                                 rc = -1; //what happens on this -1?
                                 goto out;
