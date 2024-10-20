@@ -307,6 +307,10 @@ if ENABLE_HELLO_STREAM
 SUBDIRS += hello_stream
 endif
 
+if ENABLE_DYNAMIC_STREAM
+SUBDIRS += dynamic_stream
+endif
+
 if ENABLE_BLOB_STREAM
 SUBDIRS += blob_stream
 endif
