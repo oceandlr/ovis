@@ -77,6 +77,7 @@ static char *stream;
 static struct ldmsd_plugin *myself;
 
 #define SAMP "dynamic_stream_sampler"
+#define SETUP_FEEDBACK "SETUP_FEEDBACK"
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
 
@@ -98,34 +99,299 @@ static int sample(struct ldmsd_sampler *self)
 	return 0;
 }
 
+
+static int propogate_feedback(char* dest, const char* port, const char* orig_stream, const char* dyn_stream, char* list){
+
+        char* xprt = "sock";
+        char* auth = "munge";
+        char buff[1024]; //FIXME TODO make dynamic. get rid of fixd length
+        ldms_t ldms = NULL;
+        int rc;
+
+        rc = snprintf(buff, 1023, "{\"cmd\" : \"%s\", \"stream\" : \"%s\", \"list\" : \"%s\"}", SETUP_FEEDBACK, dyn_stream, list);
+        if (rc < 1 || rc > 1022){
+                msglog(LDMSD_LERROR, SAMP " Cannot build SETUP_FEEDBACK message\n");
+                rc = -1;
+                goto out;
+        }
+
+        ldms = ldms_xprt_new_with_auth(xprt, NULL, auth, NULL);
+        if (!ldms) {
+                rc = errno;
+                msglog(LDMSD_LERROR, SAMP " Failed to create the LDMS transport endpoint\n");
+                goto out;
+        }
+        rc = ldms_xprt_connect_by_name(ldms, dest, port, NULL, NULL);
+        if (rc) {
+                msglog(LDMSD_LERROR, SAMP " Error %d connecting to peer\n", rc);
+                goto out;
+        }
+
+        //tell the dest on cmd to listen to the new stream
+        //TODO: is entity NULL and does that matter?
+        msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s'\n", buff);
+        rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_JSON, buff, sizeof(buff));
+        if (rc){
+                msglog(LDMSD_LERROR, SAMP " Error %d publishing to cmd\n", rc);
+                goto out;
+        }
+        //this doesnt seem to be happening for json. STARTHERE -- check into this blocking or not. maybe it worked with diff sizeof.
+        msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", buff);
+
+ out:
+        return rc;
+
+
+}
+
 static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                                   ldmsd_stream_type_t stream_type,
                                   const char *msg, size_t msg_len,
                                   json_entity_t entity)
 {
 	int rc = 0;
+
+        //this is a placeholder function for when I recieve data on the feedback channel. This may end up being removed.
+
+        switch (stream_type) {
+        case LDMSD_STREAM_JSON:
+                msglog(LDMSD_LDEBUG, "dynamic stream: '%s', stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
+                       ldmsd_stream_client_name(c), "JSON", msg, msg_len, entity);
+                rc = 0;
+                goto out;
+                break;
+	case LDMSD_STREAM_STRING:
+                msglog(LDMSD_LDEBUG, "dynamic stream: '%s', stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
+                       ldmsd_stream_client_name(c), "STRING", msg, msg_len, entity);
+                rc = 0;
+                goto out;
+	break;
+        }
+
+ out:
+        return rc;
+
+}
+
+static int setup_feedback(const char* orig_stream, const char* msg, int msg_len){
+
+        int rc = 0;
         char *buff = NULL;
-        char *dyncmd = NULL;
-        char *temp = NULL;
+        char *dynstream = NULL;
+        char *dynlist = NULL;
         char* orig = NULL;
+        char *temp = NULL;
         char* sendon = NULL;
         char *mydata = NULL;
         char *myhost = NULL;
-        int myport = -1;
+        char *myport = NULL;
         char *upstreamdata = NULL;
         char *upstreamhost = NULL;
-        int upstreamport = -1;
+        char *upstreamport = NULL;
         char *saveptr = NULL;
+
+        ldmsd_stream_client_t client = NULL;
+
+        json_parser_t jp = NULL;
+        json_entity_t jdoc = NULL;
+        json_entity_t ent = NULL;
+
+        //parse the data for command SETUP_FEEDBACK
+        //parsing will catch if this is json
+        jp = json_parser_new(0);
+        if (!jp){
+                rc = errno;
+                msglog(LDMSD_LERROR, SAMP " read() error: %d\n", errno);
+                goto out;
+        }
+        buff = strdup(msg);
+        if (!buff){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+        rc = json_parse_buffer(jp, buff, msg_len, &jdoc);
+        if (rc) {
+                msglog(LDMSD_LERROR, SAMP " JSON parse failed: %d\n", rc);
+                goto out;
+        }
+        ent = json_value_find(jdoc, "stream");
+        if (ent){
+                if (ent->type != JSON_STRING_VALUE){
+                        rc = EINVAL;
+                        msglog(LDMSD_LERROR, SAMP " Error: 'stream' must be a string\n");
+                        goto out;
+                }
+                dynstream = strdup(ent->value.str_->str);
+                if (!dynstream){
+                        rc = ENOMEM;
+                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                        goto out;
+                }
+
+                ent = json_value_find(jdoc, "list");
+                if (ent){
+                        if (ent->type != JSON_STRING_VALUE){
+                                rc = EINVAL;
+                                msglog(LDMSD_LERROR, SAMP " Error: 'list' must be a string\n");
+                                goto out;
+                        }
+                        dynlist = strdup(ent->value.str_->str);
+                        if (!dynlist){
+                                rc = ENOMEM;
+                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                                goto out;
+                        }
+                        orig = strdup(dynlist);
+                        if (!orig){
+                                rc = ENOMEM;
+                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                                goto out;
+                        }
+                        //parse the list
+                        mydata = strtok_r(dynlist, ":", &saveptr);
+                        if (mydata != NULL){
+                                msglog(LDMSD_LDEBUG, SAMP " mydata='%s' rest='%s'\n", mydata, saveptr);
+                                sendon = strdup(saveptr);
+                                temp = strdup(saveptr);
+
+                                //split mydata
+                                myhost = strtok_r(mydata, "@", &saveptr);
+                                if (myhost != NULL){
+                                        //myport = atoi(saveptr); //TODO: replace with something that will check with error
+                                        //myport is a char.
+                                        myport = strdup(saveptr);
+                                        msglog(LDMSD_LDEBUG,
+                                               SAMP " myhost = '%s' myport = '%s'\n",
+                                               myhost, myport);
+                                } else {
+                                        msglog(LDMSD_LERROR,
+                                               SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
+                                        rc = -1;
+                                        goto out;
+                                }
+
+                                //split upstreamdata
+                                upstreamdata = strtok_r(temp, ":", &saveptr);
+                                if (upstreamdata != NULL){
+                                        upstreamhost = strtok_r(upstreamdata, "@", &saveptr);
+                                        if (upstreamhost != NULL){
+                                                // upstreamport = atoi(saveptr); //TODO: replace
+                                                // upstreamport is a char
+                                                upstreamport = strdup(saveptr);
+                                                msglog(LDMSD_LDEBUG,
+                                                       SAMP " upstreamhost = '%s' upstreamport = '%s'\n",
+                                                       upstreamhost, upstreamport);
+
+                                        } else {
+                                                msglog(LDMSD_LERROR,
+                                                       SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
+                                                       upstreamdata);
+                                                rc = -1;
+                                                goto out;
+                                        }
+                                } else {
+                                        msglog(LDMSD_LERROR,
+                                               SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
+                                               upstreamdata);
+                                        rc = -1;
+                                        goto out;
+                                }
+                        } else {
+                                msglog(LDMSD_LERROR,
+                                       SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
+                                //TODO: Is this the last in the list???
+                                rc = -1;
+                                goto out;
+                        }
+                } else {
+                        msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: No upstream list on " SETUP_FEEDBACK "\n");
+                        rc = -1;
+                        goto out;
+                }
+        } else {
+                msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: No upstream list on " SETUP_FEEDBACK "\n");
+                rc = -1;
+                goto out;
+        }
+
+        // the host and port info will be used for ldmsd controller
+        msglog(LDMSD_LINFO, SAMP " orig string '%s'\n", orig);
+        msglog(LDMSD_LINFO, SAMP " my host = '%s' myport = '%s' upstream host = '%s' upstream port = '%s' sendon list = '%s'\n",
+               myhost, myport, upstreamhost, upstreamport, sendon);
+
+        //1) TODO: use ldmsd_controller to tell this deamon on myhost myport to subscribe to stream dynstream from upstreamhost.
+        //TODO
+        msglog(LDMSD_LERROR, SAMP " should be issuing commands to ldmsd_controller, but it is not written yet\n");
+
+        //2) set up a callback for what to do when I receive a message on foo_fb (which I will get from upstream).
+        //                      This may end up being removed at some points
+
+        msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n", dynstream);
+        client = ldmsd_stream_subscribe(dynstream, dynamic_stream_recv_cb, myself);
+        if (!client){
+                msglog(LDMSD_LERROR,
+                       SAMP " cannot subscribe to stream '%s' (might be duplicate, so continuing)\n",
+                       dynstream);
+        }
+
+        //3) have stripped off my daemon and send the message to upstream so that it can do the same up the stream
+        //TODO: is thre anyway I will know if this works?
+        rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
+        //TODO: for now, keep alive if can't propogate feedback
+        rc = 0;
+
+        //4) TODO: at the extreme end, send a test message back down.
+        //TODO
+
+ out:
+
+        if (buff) free(buff);
+        if (orig) free(orig);
+        if (temp) free(temp);
+        if (dynlist) free(dynlist);
+        if (myport) free(myport);
+        if (upstreamport) free(upstreamport);
+        if (sendon) free(sendon);
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+
+        return rc;
+}
+
+
+
+static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
+			 ldmsd_stream_type_t stream_type,
+			 const char *msg, size_t msg_len,
+			 json_entity_t entity)
+{
+	int rc = 0;
+        int len;
+        char *dynstream = NULL;
+        char *cmd = NULL;
+        char *buff = NULL;
 	const char *type = "UNKNOWN";
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
 
+        //START HERE....MAKE SURE IT WILL HANDLE MULTIPLE MESSAGES - NOW IT SEEMS TO HANG AFTER THE JSON PUBLISH. MAKE SURE IT CAN ID WHEN IT IS THE LAST ONE IN THE CHAIN. TRY WITH MORE THAN 2.
+
 
 	switch (stream_type) {
 	case LDMSD_STREAM_JSON:
 		type = "JSON";
-                msglog(LDMSD_LDEBUG, "dynamic stream: '%s', stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
+                /* For now, only accepting a message that is in the form
+                   "{"cmd":"SETUP_FEEDBACK", "stream":"foo_fb", "list":"L1@52001:L2@52002:L3@52003..."
+                   this will:
+                   1) use ldmsd_controller to tell this Aggregator to subscribe to stream foo_fb from L1
+                   2) set up a callback for what to do when I receive a message on foo_fb (which I will get from upstream).
+                      This may end up being removed at some points
+                   3) strip off L1 and send the message to L1 so that it can do the same up the stream
+                   4) at the extreme end, send a test message back down.
+                */
+                msglog(LDMSD_LDEBUG, "stream: '%s', stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
                        ldmsd_stream_client_name(c), type, msg, msg_len, entity);
 
                 jp = json_parser_new(0);
@@ -149,211 +415,51 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                 if (ent){
                         if (ent->type != JSON_STRING_VALUE){
                                 rc = EINVAL;
-                                msglog(LDMSD_LERROR, SAMP " Error: 'name' must be a string\n");
+                                msglog(LDMSD_LERROR, SAMP " Error: 'cmd' must be a string\n");
                                 goto out;
                         }
-                        dyncmd = strdup(ent->value.str_->str);
-                        if (!dyncmd){
+                        cmd = strdup(ent->value.str_->str);
+                        if (!cmd){
                                 rc = ENOMEM;
                                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                                 goto out;
                         }
-                        if (strcmp(dyncmd, "SETUP_UPSTREAM")){
-                                msglog(LDMSD_LERROR, SAMP " Cannot handle command '%s'\n", dyncmd);
-                                rc = -1;
-                                goto out;
-                        }
-                        free(dyncmd);
-                        dyncmd = NULL;
-
-                        ent = json_value_find(jdoc, "list");
-                        if (ent){
-                                if (ent->type != JSON_STRING_VALUE){
-                                        rc = EINVAL;
-                                        msglog(LDMSD_LERROR, SAMP " Error: 'list' must be a string\n");
-                                        goto out;
-                                }
-                                dyncmd = strdup(ent->value.str_->str);
-                                if (!dyncmd){
-                                        rc = ENOMEM;
-                                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                        goto out;
-                                }
-                                orig = strdup(dyncmd);
-                                if (!orig){
-                                        rc = ENOMEM;
-                                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                        goto out;
-                                }
-
-                                mydata = strtok_r(dyncmd, ":", &saveptr);
-                                if (mydata != NULL){
-                                        msglog(LDMSD_LDEBUG, SAMP " mydata='%s' rest='%s'\n", mydata, saveptr);
-                                        sendon = strdup(saveptr);
-                                        temp = strdup(saveptr);
-
-                                        //split mydata
-                                        myhost = strtok_r(mydata, "@", &saveptr);
-                                        if (myhost != NULL){
-                                                myport = atoi(saveptr); //TODO: replace with something that will check with error
-                                                msglog(LDMSD_LDEBUG,
-                                                       SAMP " myhost = 's' myport = '%d'\n",
-                                                       myhost, myport);
-                                        } else {
-                                                msglog(LDMSD_LERROR,
-                                                       SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
-                                                goto out;
-                                        }
-
-                                        //split upstreamdata
-                                        upstreamdata = strtok_r(temp, ":", &saveptr);
-                                        if (upstreamdata != NULL){
-                                                upstreamhost = strtok_r(upstreamdata, "@", &saveptr);
-                                                if (upstreamhost != NULL){
-                                                        upstreamport = atoi(saveptr); //TODO: replace
-                                                } else {
-                                                        msglog(LDMSD_LERROR,
-                                                               SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
-                                                               upstreamdata);
-                                                        goto out;
-                                                }
-                                        } else {
-                                                msglog(LDMSD_LERROR,
-                                                       SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
-                                                       upstreamdata);
-                                                goto out;
-                                        }
-                                } else {
-                                        msglog(LDMSD_LERROR,
-                                               SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
-                                        goto out;
-                                }
-                        } else {
-                                msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: no upstream list\n");
-                                rc = -1;
-                                goto out;
-                        }
-                } else {
-                        msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: no cmd list\n");
-                        rc = -1;
-                        goto out;
-                }
-
-		break;
-	case LDMSD_STREAM_STRING:
-                type = "STRING";
-                msglog(LDMSD_LDEBUG, "dynamic stream: '%s', stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
-                       ldmsd_stream_client_name(c), type, msg, msg_len, entity);
-	break;
-	}
-
-        msglog(LDMSD_LINFO, SAMP " orig string '%s'\n", orig);
-        msglog(LDMSD_LINFO, SAMP " my host = '%s' myport = '%d' upstream host = '%s' upstream port = '%d'\n",
-         myhost, myport, upstreamhost, upstreamport);
-        msglog(LDMSD_LINFO, SAMP " sending on '%s'\n", sendon);
-
-        //START HERE...
-        //TODO: NO UNSUBSCRIBING YET...
-
- out:
-
-
-        if (buff) free(buff);
-        if (orig) free(orig);
-        if (temp) free(temp);
-        if (dyncmd) free(dyncmd);
-        if (sendon) free(sendon);
-        if (jp) json_parser_free(jp);
-        if (jdoc) json_entity_free(jdoc);
-
-        return rc;
-}
-
-static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
-			 ldmsd_stream_type_t stream_type,
-			 const char *msg, size_t msg_len,
-			 json_entity_t entity)
-{
-	int rc = 0;
-        int len;
-        char *dynstream = NULL;
-        char *buff = NULL;
-	const char *type = "UNKNOWN";
-        json_parser_t jp = NULL;
-        json_entity_t jdoc = NULL;
-        json_entity_t ent = NULL;
-
-
-	switch (stream_type) {
-	case LDMSD_STREAM_JSON:
-		type = "JSON";
-                //For now, whatever that msg is, is a stream to which I (the sampler) will subscribe
-                msglog(LDMSD_LDEBUG, "stream: '%s', stream_type: %s, msg: \"%s\", msg_len: %d, entity: %p\n",
-                       ldmsd_stream_client_name(c), type, msg, msg_len, entity);
-
-                jp = json_parser_new(0);
-                if (!jp){
-                        rc = errno;
-                        msglog(LDMSD_LERROR, SAMP " read() error: %d\n", errno);
-                        goto out;
-                }
-                buff = strdup(msg);
-                if (!buff){
-                        rc = ENOMEM;
-                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                        goto out;
-                }
-                rc = json_parse_buffer(jp, buff, msg_len, &jdoc);
-                if (rc) {
-                        msglog(LDMSD_LERROR, SAMP " JSON parse failed: %d\n", rc);
-                        goto out;
-                }
-                ent = json_value_find(jdoc, "name");
-                if (ent){
-                        if (ent->type != JSON_STRING_VALUE){
-                                rc = EINVAL;
-                                msglog(LDMSD_LERROR, SAMP " Error: 'name' must be a string\n");
-                                goto out;
-                        }
-                        dynstream = strdup(ent->value.str_->str);
-                        if (!dynstream){
-                                rc = ENOMEM;
-                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                goto out;
-                        }
-                        len = strlen(dynstream);
+                        len = strlen(cmd);
                         if (!len){
                                 msglog(LDMSD_LERROR,
-                                       SAMP " Error: invalid stream name '%s'\n", dynstream);
+                                       SAMP " Error: invalid cmd '%s'\n", cmd);
                                 rc = -1;
                                 goto out;
                         }
                         //Get rid of trailing whitespace and newlines
-                        while (len && (isspace(dynstream[len-1]) || dynstream[len-1] == '\n')) {
+                        while (len && (isspace(cmd[len-1]) || cmd[len-1] == '\n')) {
                                 len--;
                         }
 
                         if (!len){
-                                msglog(LDMSD_LERROR,  SAMP " Error: empty stream name!\n");
+                                msglog(LDMSD_LERROR,  SAMP " Error: empty cmd!\n");
                                 rc = -1;
                                 goto out;
                         }
-                        dynstream[len] = '\0';
-                        msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n", dynstream);
-                        ldmsd_stream_client_t client =
-                                ldmsd_stream_subscribe(dynstream, dynamic_stream_recv_cb, myself);
-                        if (!client){
+                        cmd[len] = '\0';
+
+                        if (!strcmp(cmd, SETUP_FEEDBACK)){
+                                rc = setup_feedback(ldmsd_stream_client_name(c), msg, msg_len);
+                                if (rc != 0) goto out;
+                        } else {
                                 msglog(LDMSD_LERROR,
-                                       SAMP " cannot subscribe to stream '%s' (might be duplicate)\n",
-                                       dynstream);
-                                rc = -1; //what happens on this -1?
+                                       SAMP " Error: invalid cmd '%s'\n", cmd);
+                                rc = -1;
                                 goto out;
                         }
                 } else {
-                        msglog(LDMSD_LERROR, SAMP " Error: no dynamic stream name\n");
+                        msglog(LDMSD_LERROR,
+                               SAMP "Error: missing cmd in msg '%s'\n", buff);
                         rc = -1;
                         goto out;
                 }
+                //3) strip off L1 and send the message to L1 so that it can do the same up the stream
+                //4) at the extreme end, send a test message back down.
 
                 break;
         case LDMSD_STREAM_STRING:
