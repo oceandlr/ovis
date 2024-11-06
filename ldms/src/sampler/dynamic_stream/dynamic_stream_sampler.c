@@ -104,17 +104,30 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
 
         char* xprt = "sock";
         char* auth = "munge";
-        char buff[1024]; //FIXME TODO make dynamic. get rid of fixd length
+        jbuf_t jb;
         ldms_t ldms = NULL;
         int rc;
 
-        rc = snprintf(buff, 1023, "{\"cmd\" : \"%s\", \"stream\" : \"%s\", \"list\" : \"%s\"}", SETUP_FEEDBACK, dyn_stream, list);
-        if (rc < 1 || rc > 1022){
-                msglog(LDMSD_LERROR, SAMP " Cannot build SETUP_FEEDBACK message\n");
-                rc = -1;
-                goto out;
+
+        //FIXME: FAKE THIS FOR NOW
+        if (strcmp(port,"52003") == 0){
+                msglog(LDMSD_LCRITICAL, SAMP " not publishing to port '%s'\n", port);
+                rc = 0;
+                return rc;
         }
 
+        //build the message
+        msglog(LDMSD_LDEBUG, SAMP " building jbuf\n");
+        jb = jbuf_new(); if (!jb) goto out_1;
+        jb = jbuf_append_str(jb, "{"); if (!jb) goto out_1;
+        jb = jbuf_append_attr(jb, "cmd", "\"%s\",", SETUP_FEEDBACK); if (!jb) goto out_1;
+        jb = jbuf_append_attr(jb, "stream", "\"%s\",", dyn_stream); if (!jb) goto out_1;
+        jb = jbuf_append_attr(jb, "list", "\"%s\"", list); if (!jb) goto out_1;
+        jb = jbuf_append_str(jb, "}}"); if (!jb) goto out_1;
+        msglog(LDMSD_LDEBUG, SAMP " done building jbuf\n");
+
+
+        //set up the connection
         ldms = ldms_xprt_new_with_auth(xprt, NULL, auth, NULL);
         if (!ldms) {
                 rc = errno;
@@ -128,17 +141,28 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
         }
 
         //tell the dest on cmd to listen to the new stream
-        //TODO: is entity NULL and does that matter?
-        msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s'\n", buff);
-        rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_JSON, buff, sizeof(buff));
+        msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s' size=%d (Warning: this appears to be blocking)\n",
+               jb->buf, jb->cursor+1);
+        //NOTE: if I publish this as STRING, other side has error (maybe because of quotes)
+        rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
         if (rc){
                 msglog(LDMSD_LERROR, SAMP " Error %d publishing to cmd\n", rc);
                 goto out;
+
         }
-        //this doesnt seem to be happening for json. STARTHERE -- check into this blocking or not. maybe it worked with diff sizeof.
-        msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", buff);
+        //FIXME this doesnt seem to be happening for json. STARTHERE -- check into this blocking or not and what it is waiting for.
+        msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", jb->buf);
+
+        goto out;
+
+ out_1:
+        msglog(LDMSD_LERROR, SAMP " Cannot build SETUP_FEEDBACK message\n");
+        rc = -1;
+        goto out;
 
  out:
+        if (jb) jbuf_free(jb);
+
         return rc;
 
 
@@ -333,13 +357,21 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
                 msglog(LDMSD_LERROR,
                        SAMP " cannot subscribe to stream '%s' (might be duplicate, so continuing)\n",
                        dynstream);
+        } else {
+                msglog(LDMSD_LINFO,
+                       SAMP " subscribed to stream '%s')\n",
+                       dynstream);
         }
+
 
         //3) have stripped off my daemon and send the message to upstream so that it can do the same up the stream
         //TODO: is thre anyway I will know if this works?
         rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
-        //TODO: for now, keep alive if can't propogate feedback
-        rc = 0;
+        if (rc){
+                msglog(LDMSD_LERROR, SAMP " cannot propogate feedback, but acting like successful\n");
+                //TODO: for now, keep alive if can't propogate feedback
+                rc = 0;
+        }
 
         //4) TODO: at the extreme end, send a test message back down.
         //TODO
@@ -355,6 +387,8 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
         if (sendon) free(sendon);
         if (jp) json_parser_free(jp);
         if (jdoc) json_entity_free(jdoc);
+
+        msglog(LDMSD_LDEBUG, SAMP " completed setup_feedback returning %d\n", rc);
 
         return rc;
 }
@@ -376,7 +410,8 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
 
-        //START HERE....MAKE SURE IT WILL HANDLE MULTIPLE MESSAGES - NOW IT SEEMS TO HANG AFTER THE JSON PUBLISH. MAKE SURE IT CAN ID WHEN IT IS THE LAST ONE IN THE CHAIN. TRY WITH MORE THAN 2.
+        //FIXME: NOW IT SEEMS TO HANG AFTER THE JSON PUBLISH (think when I had string it was ok)
+        //FIXME: MAKE SURE IT CAN ID WHEN IT IS THE LAST ONE IN THE CHAIN. TRY WITH MORE THAN 2.
 
 
 	switch (stream_type) {
@@ -445,7 +480,10 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 
                         if (!strcmp(cmd, SETUP_FEEDBACK)){
                                 rc = setup_feedback(ldmsd_stream_client_name(c), msg, msg_len);
-                                if (rc != 0) goto out;
+                                if (rc != 0) {
+                                        msglog(LDMSD_LERROR, SAMP " could not set up feedback error=%d\n", rc);
+                                        goto out;
+                                }
                         } else {
                                 msglog(LDMSD_LERROR,
                                        SAMP " Error: invalid cmd '%s'\n", cmd);
@@ -480,6 +518,8 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         if (jdoc) json_entity_free(jdoc);
         if (dynstream) free(dynstream);
         if (buff) free(buff);
+
+        msglog(LDMSD_LDEBUG, SAMP " completed cmd_recv_cb returning=%d\n", rc);
 
 	return rc;
 }
