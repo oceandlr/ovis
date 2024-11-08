@@ -143,8 +143,9 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
         //tell the dest on cmd to listen to the new stream
         msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s' size=%d (Warning: this appears to be blocking)\n",
                jb->buf, jb->cursor+1);
-        //NOTE: if I publish this as STRING, other side has error (maybe because of quotes)
         rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
+        //TEST FAKE TEMP --- this also is blocking, which we don't want. FIXME
+        //        rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_STRING, "this is a test", sizeof("this is a test"));
         if (rc){
                 msglog(LDMSD_LERROR, SAMP " Error %d publishing to cmd\n", rc);
                 goto out;
@@ -197,28 +198,29 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 
 }
 
-static int setup_feedback(const char* orig_stream, const char* msg, int msg_len){
 
-        int rc = 0;
+static int parse_setup_feedback_message(const char* msg, int msg_len, char** dynstream_e, char** myhost_e, char** myport_e,
+                                        char** upstreamhost_e, char** upstreamport_e, char** sendon_e){
+
         char *buff = NULL;
-        char *dynstream = NULL;
-        char *dynlist = NULL;
-        char* orig = NULL;
         char *temp = NULL;
-        char* sendon = NULL;
+        char *dynlist = NULL;
+        char *dynstream = NULL;
         char *mydata = NULL;
+        char *saveptr = NULL;
+
         char *myhost = NULL;
         char *myport = NULL;
         char *upstreamdata = NULL;
-        char *upstreamhost = NULL;
         char *upstreamport = NULL;
-        char *saveptr = NULL;
-
-        ldmsd_stream_client_t client = NULL;
+        char *upstreamhost = NULL;
+        char *sendon = NULL;
 
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
+
+        int rc = 0;
 
         //parse the data for command SETUP_FEEDBACK
         //parsing will catch if this is json
@@ -266,25 +268,31 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
                                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                                 goto out;
                         }
-                        orig = strdup(dynlist);
-                        if (!orig){
-                                rc = ENOMEM;
-                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                goto out;
-                        }
+
                         //parse the list
+                        msglog(LDMSD_LDEBUG, SAMP " orig='%s'\n", dynlist);
                         mydata = strtok_r(dynlist, ":", &saveptr);
                         if (mydata != NULL){
                                 msglog(LDMSD_LDEBUG, SAMP " mydata='%s' rest='%s'\n", mydata, saveptr);
                                 sendon = strdup(saveptr);
                                 temp = strdup(saveptr);
+                                if (!sendon || !temp){
+                                        rc = ENOMEM;
+                                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                                        goto out;
+                                }
 
                                 //split mydata
-                                myhost = strtok_r(mydata, "@", &saveptr);
+                                myhost  = strtok_r(mydata, "@", &saveptr);
                                 if (myhost != NULL){
                                         //myport = atoi(saveptr); //TODO: replace with something that will check with error
                                         //myport is a char.
                                         myport = strdup(saveptr);
+                                        if (!myport){
+                                                rc = ENOMEM;
+                                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                                                goto out;
+                                        }
                                         msglog(LDMSD_LDEBUG,
                                                SAMP " myhost = '%s' myport = '%s'\n",
                                                myhost, myport);
@@ -306,7 +314,6 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
                                                 msglog(LDMSD_LDEBUG,
                                                        SAMP " upstreamhost = '%s' upstreamport = '%s'\n",
                                                        upstreamhost, upstreamport);
-
                                         } else {
                                                 msglog(LDMSD_LERROR,
                                                        SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
@@ -339,18 +346,69 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
                 goto out;
         }
 
-        // the host and port info will be used for ldmsd controller
-        msglog(LDMSD_LINFO, SAMP " orig string '%s'\n", orig);
-        msglog(LDMSD_LINFO, SAMP " my host = '%s' myport = '%s' upstream host = '%s' upstream port = '%s' sendon list = '%s'\n",
-               myhost, myport, upstreamhost, upstreamport, sendon);
+        *myhost_e = strdup(myhost);
+        *upstreamhost_e = strdup(upstreamhost);
+        if ((*myhost_e == NULL) || (*upstreamhost_e == NULL)){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+        *dynstream_e = dynstream;
+        *myport_e = myport;
+        *upstreamport_e = upstreamport;
+        *sendon_e = sendon;
 
-        //1) TODO: use ldmsd_controller to tell this deamon on myhost myport to subscribe to stream dynstream from upstreamhost.
-        //TODO
+ out:
+        if (buff) free(buff);
+        if (temp) free(temp);
+        if (dynlist) free(dynlist);
+
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+
+        msglog(LDMSD_LINFO,
+               SAMP " my host = '%s' myport = '%s' dynstream = '%s' upstream host = '%s' upstream port = '%s' sendon list = '%s'\n", *myhost_e, *myport_e, *dynstream_e,  *upstreamhost_e, *upstreamport_e, *sendon_e);
+
+        msglog(LDMSD_LDEBUG, SAMP " completed parse_setup_feedback_message returning %d\n", rc);
+
+        //it will be the callers responsibility to free the arguments
+        return rc;
+
+}
+
+
+static int setup_feedback(const char* orig_stream, const char* msg, int msg_len){
+
+        int rc = 0;
+        //responsible for freeing all of these:
+        char *dynstream = NULL;
+        char *myhost = NULL;
+        char *myport = NULL;
+        char *upstreamhost = NULL;
+        char *upstreamport = NULL;
+        char *sendon = NULL;
+
+        ldmsd_stream_client_t client = NULL;
+
+        // the host and port info will be used for ldmsd controller
+        rc = parse_setup_feedback_message(msg, msg_len, &dynstream, &myhost, &myport, &upstreamhost,
+                                          &upstreamport, &sendon);
+        if (rc != 0){
+                msglog(LDMSD_LDEBUG, SAMP " Error parsing message. No further actions on SETUP_FEEDBACK\n");
+                goto out;
+        }
+
+        msglog(LDMSD_LINFO, SAMP " my host = '%s' myport = '%s' dynstream = '%s' upstream host = '%s' upstream port = '%s' sendon list = '%s'\n", myhost, myport, dynstream, upstreamhost, upstreamport, sendon);
+
+        //1) TODO: use ldmsd_controller to tell this daemon on myhost myport to subscribe to stream dynstream from upstreamhost.
         msglog(LDMSD_LERROR, SAMP " should be issuing commands to ldmsd_controller, but it is not written yet\n");
 
         //2) set up a callback for what to do when I receive a message on foo_fb (which I will get from upstream).
         //                      This may end up being removed at some points
 
+        //FIXME: TEMP Don't need this for the moment....
+        msglog(LDMSD_LERROR, SAMP " should be subscribing to stream '%s' as a possible test, but not doing for now\n", dynstream);
+        /*
         msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n", dynstream);
         client = ldmsd_stream_subscribe(dynstream, dynamic_stream_recv_cb, myself);
         if (!client){
@@ -362,31 +420,31 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
                        SAMP " subscribed to stream '%s')\n",
                        dynstream);
         }
+        */
 
+        //FIXME: I thought I have seen this work for string, so where is the hanging happening....
 
         //3) have stripped off my daemon and send the message to upstream so that it can do the same up the stream
-        //TODO: is thre anyway I will know if this works?
+        //TODO: is there anyway I will know if this works?
         rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
         if (rc){
                 msglog(LDMSD_LERROR, SAMP " cannot propogate feedback, but acting like successful\n");
                 //TODO: for now, keep alive if can't propogate feedback
                 rc = 0;
         }
+        msglog(LDMSD_LERROR, SAMP " after propogate_feedback\n");
 
         //4) TODO: at the extreme end, send a test message back down.
         //TODO
 
  out:
 
-        if (buff) free(buff);
-        if (orig) free(orig);
-        if (temp) free(temp);
-        if (dynlist) free(dynlist);
+        if (dynstream) free(dynstream);
+        if (myhost) free(myhost);
         if (myport) free(myport);
+        if (upstreamhost) free(upstreamhost);
         if (upstreamport) free(upstreamport);
         if (sendon) free(sendon);
-        if (jp) json_parser_free(jp);
-        if (jdoc) json_entity_free(jdoc);
 
         msglog(LDMSD_LDEBUG, SAMP " completed setup_feedback returning %d\n", rc);
 
