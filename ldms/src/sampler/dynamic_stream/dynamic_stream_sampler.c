@@ -144,14 +144,12 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
         msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s' size=%d (Warning: this appears to be blocking)\n",
                jb->buf, jb->cursor+1);
         rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
-        //TEST FAKE TEMP --- this also is blocking, which we don't want. FIXME
-        //        rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_STRING, "this is a test", sizeof("this is a test"));
         if (rc){
                 msglog(LDMSD_LERROR, SAMP " Error %d publishing to cmd\n", rc);
                 goto out;
 
         }
-        //FIXME this doesnt seem to be happening for json. STARTHERE -- check into this blocking or not and what it is waiting for.
+        //FIXME. STARTHERE -- check into this blocking or not and what it is waiting for.
         msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", jb->buf);
 
         goto out;
@@ -224,140 +222,174 @@ static int parse_setup_feedback_message(const char* msg, int msg_len, char** dyn
 
         //parse the data for command SETUP_FEEDBACK
         //parsing will catch if this is json
+        //NOTE: that there are corner cases that will still slip through...
         jp = json_parser_new(0);
         if (!jp){
                 rc = errno;
                 msglog(LDMSD_LERROR, SAMP " read() error: %d\n", errno);
-                goto out;
+                goto bad;
         }
         buff = strdup(msg);
         if (!buff){
                 rc = ENOMEM;
                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                goto out;
+                goto bad;
         }
         rc = json_parse_buffer(jp, buff, msg_len, &jdoc);
         if (rc) {
                 msglog(LDMSD_LERROR, SAMP " JSON parse failed: %d\n", rc);
-                goto out;
+                goto bad;
         }
+
         ent = json_value_find(jdoc, "stream");
-        if (ent){
-                if (ent->type != JSON_STRING_VALUE){
-                        rc = EINVAL;
-                        msglog(LDMSD_LERROR, SAMP " Error: 'stream' must be a string\n");
-                        goto out;
-                }
-                dynstream = strdup(ent->value.str_->str);
-                if (!dynstream){
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No stream in message\n");
+                rc = -1;
+                goto bad_params;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, SAMP " Error: 'stream' must be a string\n");
+                goto bad_params;
+        }
+        dynstream = strdup(ent->value.str_->str);
+        if (!dynstream){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto bad;
+        }
+
+        ent = json_value_find(jdoc, "list");
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No list in message\n");
+                rc = -1;
+                goto bad_params;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, SAMP " Error: 'list' must be a string\n");
+                goto bad_params;
+        }
+        dynlist = strdup(ent->value.str_->str);
+        if (!dynlist){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto bad;
+        }
+
+        //parse the list
+        msglog(LDMSD_LDEBUG, SAMP " orig='%s'\n", dynlist);
+        mydata = strtok_r(dynlist, ":", &saveptr);
+        if (!mydata){
+                msglog(LDMSD_LERROR, SAMP " No myhost information in message\n");
+                rc = -1;
+                goto bad_params;
+        }
+        msglog(LDMSD_LDEBUG, SAMP " mydata='%s' rest='%s'\n", mydata, saveptr);
+        temp = strdup(saveptr);
+        if (!temp){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto bad;
+        }
+
+        //split mydata
+        myhost  = strtok_r(mydata, "@", &saveptr);
+        if (myhost != NULL){
+                //myport is a char.
+                myport = strdup(saveptr);
+                if (!myport){
                         rc = ENOMEM;
                         msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                        goto out;
+                        goto bad;
                 }
-
-                ent = json_value_find(jdoc, "list");
-                if (ent){
-                        if (ent->type != JSON_STRING_VALUE){
-                                rc = EINVAL;
-                                msglog(LDMSD_LERROR, SAMP " Error: 'list' must be a string\n");
-                                goto out;
-                        }
-                        dynlist = strdup(ent->value.str_->str);
-                        if (!dynlist){
-                                rc = ENOMEM;
-                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                goto out;
-                        }
-
-                        //parse the list
-                        msglog(LDMSD_LDEBUG, SAMP " orig='%s'\n", dynlist);
-                        mydata = strtok_r(dynlist, ":", &saveptr);
-                        if (mydata != NULL){
-                                msglog(LDMSD_LDEBUG, SAMP " mydata='%s' rest='%s'\n", mydata, saveptr);
-                                sendon = strdup(saveptr);
-                                temp = strdup(saveptr);
-                                if (!sendon || !temp){
-                                        rc = ENOMEM;
-                                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                        goto out;
-                                }
-
-                                //split mydata
-                                myhost  = strtok_r(mydata, "@", &saveptr);
-                                if (myhost != NULL){
-                                        //myport = atoi(saveptr); //TODO: replace with something that will check with error
-                                        //myport is a char.
-                                        myport = strdup(saveptr);
-                                        if (!myport){
-                                                rc = ENOMEM;
-                                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                                goto out;
-                                        }
-                                        msglog(LDMSD_LDEBUG,
-                                               SAMP " myhost = '%s' myport = '%s'\n",
-                                               myhost, myport);
-                                } else {
-                                        msglog(LDMSD_LERROR,
-                                               SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
-                                        rc = -1;
-                                        goto out;
-                                }
-
-                                //split upstreamdata
-                                upstreamdata = strtok_r(temp, ":", &saveptr);
-                                if (upstreamdata != NULL){
-                                        upstreamhost = strtok_r(upstreamdata, "@", &saveptr);
-                                        if (upstreamhost != NULL){
-                                                // upstreamport = atoi(saveptr); //TODO: replace
-                                                // upstreamport is a char
-                                                upstreamport = strdup(saveptr);
-                                                msglog(LDMSD_LDEBUG,
-                                                       SAMP " upstreamhost = '%s' upstreamport = '%s'\n",
-                                                       upstreamhost, upstreamport);
-                                        } else {
-                                                msglog(LDMSD_LERROR,
-                                                       SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
-                                                       upstreamdata);
-                                                rc = -1;
-                                                goto out;
-                                        }
-                                } else {
-                                        msglog(LDMSD_LERROR,
-                                               SAMP " Error Malformed argument: upstreamdata bad '%s'\n",
-                                               upstreamdata);
-                                        rc = -1;
-                                        goto out;
-                                }
-                        } else {
-                                msglog(LDMSD_LERROR,
-                                       SAMP " Error Malformed argument: mydata bad '%s'\n", mydata);
-                                //TODO: Is this the last in the list???
-                                rc = -1;
-                                goto out;
-                        }
-                } else {
-                        msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: No upstream list on " SETUP_FEEDBACK "\n");
-                        rc = -1;
-                        goto out;
-                }
-        } else {
-                msglog(LDMSD_LERROR, SAMP " Error: Malformed argument: No upstream list on " SETUP_FEEDBACK "\n");
+        }
+        if ((myhost == NULL) || !strlen(myport)){
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: Bad msg params myhost = '%s' myport = '%s'\n",
+                       myhost, myport);
                 rc = -1;
-                goto out;
+                goto bad_params;
+        }
+        msglog(LDMSD_LDEBUG, SAMP " myhost = '%s' myport = '%s'\n",
+               myhost, myport);
+
+        if ((!temp) || !strlen(temp)){
+                //no upstream
+                msglog(LDMSD_LDEBUG, SAMP " Nothing to propogate\n");
+                sendon = NULL;
+                rc = 0;
+                goto good_params;
+        } else {
+                sendon = strdup(temp);
+                if (!sendon){
+                        rc = ENOMEM;
+                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                        goto bad;
+                }
         }
 
+        //split upstreamdata. It might be ok if this doesn't exist
+        upstreamdata = strtok_r(temp, ":", &saveptr);
+        if (upstreamdata != NULL){
+                msglog(LDMSD_LDEBUG, SAMP " upstreamdata='%s' rest='%s'\n", mydata, saveptr);
+                //split upstreamdata
+                upstreamhost = strtok_r(upstreamdata, "@", &saveptr);
+                if (upstreamhost != NULL){
+                        // upstreamport is a char
+                        upstreamport = strdup(saveptr);
+                        if (!upstreamport){
+                                rc = ENOMEM;
+                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                                goto bad;
+                        }
+                }
+        }
+        if ((upstreamhost == NULL) || (strlen(upstreamport) != 0)){
+                //this is ok enough (note corner cases and there is there something or nothing to propogate
+                msglog(LDMSD_LDEBUG, SAMP " upstreamhost = '%s' upstreamport = '%s'\n",
+                       upstreamhost, upstreamport);
+                rc = 0;
+                goto good_params;
+        } else {
+                msglog(LDMSD_LDEBUG, SAMP " Error: Bad msg params upstreamhost = '%s' upstreamport = '%s'\n",
+                       upstreamhost, upstreamport);
+                rc = -1;
+                goto bad_params;
+        }
+
+
+ good_params:
+        *dynstream_e = dynstream;
+        *myport_e = myport;
         *myhost_e = strdup(myhost);
-        *upstreamhost_e = strdup(upstreamhost);
-        if ((*myhost_e == NULL) || (*upstreamhost_e == NULL)){
+        if (upstreamhost)
+                *upstreamhost_e = strdup(upstreamhost);
+        if ((*myhost_e == NULL) || (upstreamhost && (*upstreamhost_e == NULL))){
                 rc = ENOMEM;
                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                 goto out;
         }
-        *dynstream_e = dynstream;
-        *myport_e = myport;
-        *upstreamport_e = upstreamport;
+        if (upstreamport)
+                *upstreamport_e = upstreamport;
         *sendon_e = sendon;
+        rc = 0;
 
+        goto out;
+
+
+ bad_params:
+        //if get here, some form of bad parameters to act on. rc will be set
+        if (*sendon_e){
+                free(*sendon_e);
+                *sendon_e = NULL;
+        }
+ bad:
+        //if get here, some form of bad parsing. rc will get set
+        if (*sendon_e){
+                free(*sendon_e);
+                *sendon_e = NULL;
+        }
  out:
         if (buff) free(buff);
         if (temp) free(temp);
@@ -426,13 +458,17 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
 
         //3) have stripped off my daemon and send the message to upstream so that it can do the same up the stream
         //TODO: is there anyway I will know if this works?
-        rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
-        if (rc){
-                msglog(LDMSD_LERROR, SAMP " cannot propogate feedback, but acting like successful\n");
+        if (!sendon){
+                msglog(LDMSD_LDEBUG, SAMP " nothing to propogate\n");
+        } else {
+                rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
+                if (rc)
+                        msglog(LDMSD_LERROR, SAMP " cannot propogate feedback, but acting like successful\n");
                 //TODO: for now, keep alive if can't propogate feedback
                 rc = 0;
+                msglog(LDMSD_LERROR, SAMP " after propogate_feedback\n");
         }
-        msglog(LDMSD_LERROR, SAMP " after propogate_feedback\n");
+
 
         //4) TODO: at the extreme end, send a test message back down.
         //TODO
@@ -577,7 +613,7 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         if (dynstream) free(dynstream);
         if (buff) free(buff);
 
-        msglog(LDMSD_LDEBUG, SAMP " completed cmd_recv_cb returning=%d\n", rc);
+        msglog(LDMSD_LDEBUG, SAMP " completed cmd_recv_cb returning %d\n", rc);
 
 	return rc;
 }
