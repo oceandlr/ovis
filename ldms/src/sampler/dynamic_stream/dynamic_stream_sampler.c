@@ -78,6 +78,7 @@ static struct ldmsd_plugin *myself;
 
 #define SAMP "dynamic_stream_sampler"
 #define SETUP_FEEDBACK "SETUP_FEEDBACK"
+#define CMD_STREAM_BASE "cmd_stream"
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
 
@@ -86,7 +87,9 @@ static const char *usage(struct ldmsd_plugin *self)
 {
 	return  "config name=" SAMP " stream=<stream>\n" \
                 BASE_CONFIG_USAGE \
-		"     stream        Stream name to which the dynamic_stream_sampler will subscribe. Defaults to 'cmd_stream'\n";
+		"     stream        Stream name to which the dynamic_stream_sampler will subscribe. Defaults to " \
+                CMD_STREAM_BASE \
+                "\n";
 }
 
 static ldms_set_t get_set(struct ldmsd_sampler *self)
@@ -104,19 +107,15 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
 
         char* xprt = "sock";
         char* auth = "munge";
+        char streamname[1024];
         jbuf_t jb;
         ldms_t ldms = NULL;
         int rc;
 
+        //must send on a different stream for thisto not block
+        rc = snprintf(streamname, 1023, "%s%s", CMD_STREAM_BASE, port);
 
-        //FIXME: FAKE THIS FOR NOW
-        if (strcmp(port,"52003") == 0){
-                msglog(LDMSD_LCRITICAL, SAMP " not publishing to port '%s'\n", port);
-                rc = 0;
-                return rc;
-        }
-
-        //build the message
+        //build the message. stream will be cmd+port (so don't send on same stream name eachk time
         msglog(LDMSD_LDEBUG, SAMP " building jbuf\n");
         jb = jbuf_new(); if (!jb) goto out_1;
         jb = jbuf_append_str(jb, "{"); if (!jb) goto out_1;
@@ -141,15 +140,15 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
         }
 
         //tell the dest on cmd to listen to the new stream
-        msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s' size=%d (Warning: this appears to be blocking)\n",
-               jb->buf, jb->cursor+1);
-        rc = ldmsd_stream_publish(ldms, "cmd", LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
+        //        msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s' size=%d (Warning: this appears to be blocking)\n",
+        //     jb->buf, jb->cursor+1);
+        rc = ldmsd_stream_publish(ldms, streamname, LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
         if (rc){
-                msglog(LDMSD_LERROR, SAMP " Error %d publishing to cmd\n", rc);
+                msglog(LDMSD_LERROR, SAMP " Error %d publishing to '%s'\n", rc, streamname);
                 goto out;
 
         }
-        //FIXME. STARTHERE -- check into this blocking or not and what it is waiting for.
+
         msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", jb->buf);
 
         goto out;
@@ -504,9 +503,7 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
 
-        //FIXME: NOW IT SEEMS TO HANG AFTER THE JSON PUBLISH (think when I had string it was ok)
         //FIXME: MAKE SURE IT CAN ID WHEN IT IS THE LAST ONE IN THE CHAIN. TRY WITH MORE THAN 2.
-
 
 	switch (stream_type) {
 	case LDMSD_STREAM_JSON:
@@ -626,9 +623,9 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl,
 
 	value = av_value(avl, "stream");
 	if (value)
-		stream = strdup(value);
+		stream = strdup(value); //should be cmd_streamPORTNO
 	else
-		stream = strdup("cmd_stream");
+		stream = strdup(CMD_STREAM_BASE);
 
         myself = self;
         msglog(LDMSD_LCRITICAL, SAMP " subscribing to stream '%s'\n", stream);

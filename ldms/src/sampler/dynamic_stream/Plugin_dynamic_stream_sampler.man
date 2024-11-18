@@ -1,6 +1,6 @@
 .\" Manpage for Plugin_dynamic_stream_sampler
 .\" Contact ovis-help@ca.sandia.gov to correct errors or typos.
-.TH man 7 "13 Oct 2024" "v4" "LDMS Plugin dynamic_stream_sampler man page"
+.TH man 7 "18 Nov 2024" "v4" "LDMS Plugin dynamic_stream_sampler man page"
 
 .SH NAME
 Plugin_dynamic_stream_sampler - man page for the LDMS dynamic_stream_sampler plugin
@@ -12,9 +12,9 @@ config name=dynamic_stream_sampler [ <attr>=<value> ]
 
 .SH DESCRIPTION
 With LDMS (Lightweight Distributed Metric Service), plugins for the ldmsd (ldms daemon) are configured via ldmsd_controller
-or a configuration file. The dynamic_stream_sampler plugin does not actually sample, but rather subscribes to an ldmsd_stream that is meant to take commands. When it gets a request on the command channel to subscribe to a new stream, it will call subscribe on its ldmsd from the upstream L1 <HOW DOES IT FIND THIS?>. It will also tell its aggregator (L1) to subscribe to that stream from L2 <How does anyone find the next level? does the L1 also have a sampler?>. The request to subscribe will come from the app who is publishing to the stream already.
+or a configuration file. The dynamic_stream_sampler plugin does not actually sample, but rather subscribes to an ldmsd_stream that is meant to take commands. When it gets a request on its command stream to subscribe to a new stream, it will (1) call subscribe on its ldmsd from the upstream L1 and (2) it will tell its upstream L1 via the command stream to subscribe to that stream from L2.
 
-The sampler is on the ldmsd on the node. HOW DOES IT FIND ITS L1? WHO NEEDS TO FIND THE L2? Is there a sampler on the L1s and L2s subscribing to cmd? Are these the same samplers (how)?
+The request to subscribe will come from the app who is publishing to the stream already. Currently,functionality on the callback on the L0 on the command stream will block if it is sending a message to the L1 on the same command stream. For this current test, each ldmsd will be waiting for commands on a different command stream. We use the convention that the command streamname for a given ldmsd is cmd_streamPORTNO, but this will be changed, since this would limit ldmsd even on differnt hosts to be on the same port. It is currently a test workaround, which simplifies the message and parsing that must occur.
 
 .SH CONFIGURATION ATTRIBUTE SYNTAX
 The dynamic_stream_sampler plugin uses the sampler_base base class. This man page covers only the configuration attributes, or those with default values, specific to the this plugin; see ldms_sampler_base.man for the attributes of the base class.
@@ -32,7 +32,7 @@ This MUST be dynamic_stream_sampler.
 .TP
 stream=<stream>
 .br
-Name of the stream to which to subscribe.
+Name of the stream to which to subscribe for the command messages. Currently tis MUST be cmd_streamPORTNO and these must be distinct per ldmsd in the system.
 .RE
 
 .SH BUGS
@@ -40,34 +40,46 @@ This is under development and is junk.
 
 .SH EXAMPLES
 .PP
-THESE ARE NOT CURRENT
 Within ldmsd_controller or a configuration file:
 .nf
-load name=hello_sampler
-config name=hello_sampler producer=host1 instance=host1/hello_sampler stream=foo component_id=1
-start name=hello_sampler interval=1000000 offset=0
+load name=dynamic_stream_sampler
+config name=dynamic_stream_sampler producer=host1 instance=host1/dynamic_stream_sampler stream=cmd_stream52001 component_id=1
+start name=dynamic_stream_sampler interval=1000000 offset=0
 .fi
 
 .PP
 .nf
-> ./hello_publisher -x sock -h localhost -p 16000 -a munge -s foo -m "foo" -t str
-The data was successfully published.
-The server responded with 0
+An external source will call the publisher like so:
+> ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -f cmdstream.in -h localhost
 
-> ./hello_publisher -x sock -h localhost -p 16000 -a munge -s foo -m "bar" -t str
-The data was successfully published.
-The server responded with 0
-.ni
+where cmdstream.in looks like:
+{"cmd" : "SETUP_FEEDBACK", "stream" : "dynamicbar", "list" : "localhost@52001:localhost@52002:localhost@52003:localhost@52004"}
+Where
+.TP
+.BR cmd
+cmd=SETUP_FEEDBACK
+.br
+This must be SETUP_FEEDBACK
+.RS
+.TP
+.BR stream
+.br
+.RS
+stream=<dynamic stream name>
+.br
+.TP
+list
+.br
+This is a list of hosts of the upstream L1' and what port on which they sit. There is not complete robust-to-failure parsing. The ldsmd should find wen they are the last in the line and not send the message on.
+.RE
 
 .PP
 In the log file of the ldmsd:
 .nf
-> cat log.txt
-Mon May 04 19:44:05 2020: CRITICAL  : stream_type: STRING, msg: "foo", msg_len: 4, entity: (nil)
-Mon May 04 19:44:24 2020: CRITICAL  : stream_type: STRING, msg: "bar", msg_len: 4, entity: (nil)
+You will see data as it parses, sends, receied,, the maessages.
 .ni
 
-Note that the hello_streams sampler does not do a sample, instead it subscribes to the stream with a callback a\
+Note that the dyamic_streams sampler does not do a sample, instead it subscribes to the stream with a callback a\xsc
 nd prints out what it got off the stream.
 .fi
 
