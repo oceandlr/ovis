@@ -110,9 +110,15 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
         char streamname[1024];
         jbuf_t jb;
         ldms_t ldms = NULL;
-        int rc;
+        int rc = 0;
+
+        if (!list){
+                msglog(LDMSD_LDEBUG, SAMP " Nothing to propogate and that can be ok. Returning.\n");
+                return 0;
+        }
 
         //must send on a different stream for thisto not block
+        //FIXME: need to not make this port dependent, since might be same port on different nodes
         rc = snprintf(streamname, 1023, "%s%s", CMD_STREAM_BASE, port);
 
         //build the message. stream will be cmd+port (so don't send on same stream name eachk time
@@ -140,8 +146,6 @@ static int propogate_feedback(char* dest, const char* port, const char* orig_str
         }
 
         //tell the dest on cmd to listen to the new stream
-        //        msglog(LDMSD_LDEBUG, SAMP " Will be publishing '%s' size=%d (Warning: this appears to be blocking)\n",
-        //     jb->buf, jb->cursor+1);
         rc = ldmsd_stream_publish(ldms, streamname, LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
         if (rc){
                 msglog(LDMSD_LERROR, SAMP " Error %d publishing to '%s'\n", rc, streamname);
@@ -408,9 +412,45 @@ static int parse_setup_feedback_message(const char* msg, int msg_len, char** dyn
 }
 
 
+static int call_ldmsd_controller(const char* dynstream, const char* myhost, const char* myport,
+                                 const char* upstreamhost, const char* upstreamport){
+
+        int rc = 0;
+        char* prdcrname = "zed";
+
+        //echo “prdcr_add name=L1 …” | Ldmsd_controller -h L0 -x rdma –p 412 –a munge
+        //echo “prdcr_subscribe name=L1 stream=foo_f …” | Ldmsd_controller -h L0 -x rdma –p 412 –a munge
+        //echo “prdcr_start name=L1 …” | Ldmsd_controller -h L0 -x rdma –p 412 –a munge
+
+        //TODO... WRITE THIS THIS IS JUST A TEST
+        //FIXME need to have in the message the xprt and the auth, because we cannot get them from the args in the cb
+        //FIXME are there return values to system?
+        char teststring[2048];
+
+        if (!upstreamhost || !upstreamport){
+                msglog(LDMSD_LDEBUG, SAMP " No prdcr to add and that can be ok. Returning\n");
+                return 0;
+        }
+
+        msglog(LDMSD_LCRITICAL, SAMP " should be issuing commands to ldmsd_controller, but they are not complete yet\n");
+        rc = snprintf(teststring, 2047, "echo \"prdcr_add host=%s xprt=sock port=%s interval=2000000 type=active name=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge", upstreamhost, upstreamport, prdcrname, myhost, myport);
+        msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
+        //FIXME: is there a time to wait?
+        system(teststring);
+        //START HERE....
+        //        rc = snprintf(teststring, 2047, "echo \"prdcr_subscribe stream=%s host=%s xprt=sock port=%s interval=2000000 type=active name=zed\" | ldmsd_controller -h %s -p %s -x sock -a munge", myhost, myport, upstreamhost, upstreamport);
+        //        system(teststring);
+
+
+        rc = 0;
+        return rc;
+}
+
+
 static int setup_feedback(const char* orig_stream, const char* msg, int msg_len){
 
         int rc = 0;
+        int holdrc = 0;
         //responsible for freeing all of these:
         char *dynstream = NULL;
         char *myhost = NULL;
@@ -431,12 +471,20 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
 
         msglog(LDMSD_LINFO, SAMP " my host = '%s' myport = '%s' dynstream = '%s' upstream host = '%s' upstream port = '%s' sendon list = '%s'\n", myhost, myport, dynstream, upstreamhost, upstreamport, sendon);
 
-        //1) TODO: use ldmsd_controller to tell this daemon on myhost myport to subscribe to stream dynstream from upstreamhost.
-        msglog(LDMSD_LERROR, SAMP " should be issuing commands to ldmsd_controller, but it is not written yet\n");
+        //1) use ldmsd_controller to tell this daemon on myhost myport to subscribe to stream dynstream from upstreamhost.
+        //FIXME --- this is not written and it needs oter data sent to it
+        rc = call_ldmsd_controller(dynstream, myhost, myport, upstreamhost, upstreamport);
+        if (rc != 0){
+                //willn not setup a feedback for this, if I cannot call ldmsd_controller to listen to the dynamic stream
+                //but will still try to pass the message on to the next one -- does this make sense?
+                msglog(LDMSD_LERROR, SAMP " Error calling ldmsd controller..No cleanup yet. Will still try to propogate\n");
+                holdrc = rc;
+                goto prop;
+        }
+
 
         //2) set up a callback for what to do when I receive a message on foo_fb (which I will get from upstream).
         //                      This may end up being removed at some points
-
         //FIXME: TEMP Don't need this for the moment....
         msglog(LDMSD_LERROR, SAMP " should be subscribing to stream '%s' as a possible test, but not doing for now\n", dynstream);
         /*
@@ -453,21 +501,18 @@ static int setup_feedback(const char* orig_stream, const char* msg, int msg_len)
         }
         */
 
-        //FIXME: I thought I have seen this work for string, so where is the hanging happening....
+ prop:
 
         //3) have stripped off my daemon and send the message to upstream so that it can do the same up the stream
-        //TODO: is there anyway I will know if this works?
-        if (!sendon){
-                msglog(LDMSD_LDEBUG, SAMP " nothing to propogate\n");
-        } else {
-                rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
-                if (rc)
-                        msglog(LDMSD_LERROR, SAMP " cannot propogate feedback, but acting like successful\n");
-                //TODO: for now, keep alive if can't propogate feedback
-                rc = 0;
-                msglog(LDMSD_LERROR, SAMP " after propogate_feedback\n");
-        }
+        rc = propogate_feedback(upstreamhost, upstreamport, orig_stream, dynstream, sendon);
+        if (rc)
+                msglog(LDMSD_LERROR, SAMP " cannot propogate feedback w/Error case \n");
+        msglog(LDMSD_LERROR, SAMP " after propogate_feedback\n");
 
+        if (holdrc){
+                rc = holdrc;
+                msglog(LDMSD_LERROR, SAMP, "re-establishing error code to %d before returning\n", rc);
+        }
 
         //4) TODO: at the extreme end, send a test message back down.
         //TODO
