@@ -76,8 +76,8 @@
 static char *stream;
 static struct ldmsd_plugin *myself;
 
+#define TURNAROUND 1
 #define SAMP "dynamic_stream_sampler"
-#define SEND_FEEDBACK "SEND_FEEDBACK" //START HERE....move the turnaround message so it can just be invoked. NEXT figure out about xprt and port
 #define SETUP_FEEDBACK "SETUP_FEEDBACK"
 #define TEARDOWN_FEEDBACK "TEARDOWN_FEEDBACK"
 #define CMD_STREAM_BASE "cmd_stream"
@@ -89,6 +89,9 @@ static struct ldmsd_plugin *myself;
 #define BUFLENm1 2047
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
+
+
+//START HERE.... NEXT figure out about xprt and port
 
 
 static const char *usage(struct ldmsd_plugin *self)
@@ -574,11 +577,15 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         }
 
         if (!upstreamhost || !upstreamport || !upstreamcmdstream || !sendon){
-                //4)  the extreme end, send a test message back down.
-                //                msglog(LDMSD_LDEBUG, SAMP " Nothing to act on.  No further actions on SETUP_FEEDBACK\n");
-                system("sleep 20");
-                msglog(LDMSD_LINFO, SAMP " End of the line. Testing sending a message back down\n");
-                turnaround("localhost", "52002", dynstream); //TODO --- this is a hack...
+                if (TURNAROUND){ //FIXME --- this is a temporary hack.
+                        //4)  the extreme end, send a test message back down.
+                        //NOTE: you can also call ldmsd_stream_publish on the next to last L on the dynamic stream
+                        system("sleep 20");
+                        msglog(LDMSD_LINFO, SAMP " End of the line. Testing sending a message back down\n");
+                        turnaround("localhost", "52002", dynstream);
+                } else {
+                        msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon.  No further actions on SETUP_FEEDBACK\n");
+                }
                 goto out;
         }
 
@@ -665,8 +672,8 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 	switch (stream_type) {
 	case LDMSD_STREAM_JSON:
 		type = "JSON";
-                /* For now, only accepting a message that is in the form (note the keywords are DEFINED
-                   "{"cmd"="SETUP_FEEDBACK", "stream"="foo_fb", "prdcrname"="zed"
+                /* Accepting messages in the form (note the keywords are DEFINED)
+                   {"cmd"="SETUP_FEEDBACK", "stream"="foo_fb", "prdcrname"="zed"
                      "list"="L1@52001:L2@52002@cmd2:L3@52003@cmd3..."
                    this will:
                    1) use ldmsd_controller to tell this Aggregator to subscribe to stream foo_fb from L1
