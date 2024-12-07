@@ -77,6 +77,7 @@ static char *stream;
 static struct ldmsd_plugin *myself;
 
 #define SAMP "dynamic_stream_sampler"
+#define SEND_FEEDBACK "SEND_FEEDBACK" //START HERE....move the turnaround message so it can just be invoked. NEXT figure out about xprt and port
 #define SETUP_FEEDBACK "SETUP_FEEDBACK"
 #define TEARDOWN_FEEDBACK "TEARDOWN_FEEDBACK"
 #define CMD_STREAM_BASE "cmd_stream"
@@ -84,6 +85,8 @@ static struct ldmsd_plugin *myself;
 #define PRDCRNAME_KEY "prdcrname"
 #define LIST_KEY "list"
 #define DYNSTREAM_KEY "stream"
+#define BUFLEN 2048
+#define BUFLENm1 2047
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
 
@@ -468,11 +471,13 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream, const c
                                  const char* upstreamhost, const char* upstreamport)
 {
 
+        char* xprt = "sock";
+        char* auth = "munge";
         int rc = 0;
 
         //FIXME TODO need to have in the message the xprt and the auth, because we cannot get them from the args in the cb
         //FIXME are there return values to system?
-        char teststring[2048];
+        char teststring[BUFLEN];
 
         if (!upstreamhost || !upstreamport){
                 msglog(LDMSD_LDEBUG, SAMP " No prdcr to add/remove and that can be ok. Returning\n");
@@ -483,22 +488,23 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream, const c
 
         if (!strcmp(cmd, SETUP_FEEDBACK)){
 
-                rc = snprintf(teststring, 2047,
-                              "echo \"prdcr_add host=%s xprt=sock port=%s interval=2000000 type=active name=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge",
-                              upstreamhost, upstreamport, prdcrname, myhost, myport);
+                rc = snprintf(teststring, BUFLENm1,
+                              "echo \"prdcr_add host=%s xprt=%s port=%s interval=2000000 type=active name=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
+                              upstreamhost, xprt, upstreamport, prdcrname, myhost, myport, xprt, auth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                rc = snprintf(teststring, 2047,
-                              "echo \"prdcr_subscribe regex=^%s$ stream=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge",
-                              prdcrname, dynstream,  myhost, myport);
+                rc = snprintf(teststring, BUFLENm1,
+                              "echo \"prdcr_subscribe regex=^%s$ stream=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
+                              prdcrname, dynstream,  myhost, myport, xprt, auth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                rc = snprintf(teststring, 2047, "echo \"prdcr_start name=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge",
-                              prdcrname, myhost, myport);
+                rc = snprintf(teststring, BUFLENm1,
+                              "echo \"prdcr_start name=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
+                              prdcrname, myhost, myport, xprt, auth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
@@ -508,24 +514,25 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream, const c
         } else if (!strcmp(cmd, TEARDOWN_FEEDBACK)){
 
                 //TODO: doublecheck order
-                rc = snprintf(teststring, 2047,
-                              "echo \"prdcr_unsubscribe regex=^%s$ stream=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge",
-                              prdcrname, dynstream,  myhost, myport);
+                rc = snprintf(teststring, BUFLENm1,
+                              "echo \"prdcr_unsubscribe regex=^%s$ stream=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
+                              prdcrname, dynstream,  myhost, myport, xprt, auth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                rc = snprintf(teststring, 2047, "echo \"prdcr_stop name=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge",
-                              prdcrname, myhost, myport);
+                rc = snprintf(teststring, BUFLENm1,
+                              "echo \"prdcr_stop name=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
+                              prdcrname, myhost, myport, xprt, auth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
 
                 msglog(LDMSD_LCRITICAL, SAMP " Need to debug prdcr_del before it can be issued. Not executing it\n");
 
-                //                rc = snprintf(teststring, 2047,
-                //                              "echo \"prdcr_del name=%s\" | ldmsd_controller -h %s -p %s -x sock -a munge",
-                //                              prdcrname, myhost, myport);
+                //                rc = snprintf(teststring, BUFLENm1,
+                //                              "echo \"prdcr_del name=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
+                //                              prdcrname, myhost, myport, xprt, auth);
                 //                msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //                //FIXME: is there a time to wait?
                 //                system(teststring);
