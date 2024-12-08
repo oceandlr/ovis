@@ -73,11 +73,15 @@
 #include "../sampler_base.h"
 
 
+//START HERE...trying for figure which cmd need which args. how mnay do we need to specify especailly first and last and are they symmetric?
+
 static char *stream;
 static struct ldmsd_plugin *myself;
 
 #define TURNAROUND 1
 #define SAMP "dynamic_stream_sampler"
+#define DEFAULT_XPRT "sock"
+#define DEFAULT_AUTH "munge"
 #define SETUP_FEEDBACK "SETUP_FEEDBACK"
 #define TEARDOWN_FEEDBACK "TEARDOWN_FEEDBACK"
 #define CMD_STREAM_BASE "cmd_stream"
@@ -90,8 +94,6 @@ static struct ldmsd_plugin *myself;
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
 
-
-//START HERE.... NEXT figure out about xprt and port
 
 
 static const char *usage(struct ldmsd_plugin *self)
@@ -117,11 +119,14 @@ static int propogate_feedback(const char* cmd, const char* dest, const char* por
                               const char* upstreamcmdstream,
                               const char* dyn_stream, const char* prdcrname, char* list){
 
-        char* xprt = "sock";
-        char* auth = "munge";
+        char* xprt = DEFAULT_XPRT;
+        char* auth = DEFAULT_AUTH;
         jbuf_t jb;
         ldms_t ldms = NULL;
         int rc = 0;
+
+        //FOR EITHER SETUP_FEEDBACK or TEARDOWN_FEEDBACK need: upstreamcmdstream name, upstreamhost, upstream auth, upstream xprt (all the upstream info).
+        //THESE ARE NOT NEEDED FOR THE LAST ONE IN THE LINE
 
         if (!list){
                 msglog(LDMSD_LDEBUG, SAMP " Nothing to propogate and that can be ok. Returning.\n");
@@ -150,7 +155,8 @@ static int propogate_feedback(const char* cmd, const char* dest, const char* por
                 goto out;
         }
 
-        //tell the dest on cmd to listen to the new stream
+        //if SETUP_FEEDBACK, tell the dest on cmd to listen to the new stream.
+        //if TEARDOWN_FEEDBACK, tell the dest on cmd to tear down the new stream info.
         rc = ldmsd_stream_publish(ldms, upstreamcmdstream, LDMSD_STREAM_JSON, jb->buf, jb->cursor+1);
         if (rc){
                 msglog(LDMSD_LERROR, SAMP " Error %d publishing to '%s'\n", rc, upstreamcmdstream);
@@ -177,8 +183,8 @@ static int propogate_feedback(const char* cmd, const char* dest, const char* por
 static int turnaround(char* dest, const char* port, const char* dyn_stream)
 {
 
-        char* xprt = "sock";
-        char* auth = "munge";
+        char* xprt = DEFAULT_XPRT;
+        char* auth = DEFAULT_AUTH;
         char* teststr = "This is a test return";
         ldms_t ldms = NULL;
         int rc = 0;
@@ -246,7 +252,8 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 static int parse_feedback_message(const char* msg, int msg_len, char** dynstream_e, char** prdcrname_e,
                                         char** myhost_e, char** myport_e,
                                         char** upstreamhost_e, char** upstreamport_e, char** upstreamcmdstream_e,
-                                        char** sendon_e){
+                                        char** sendon_e)
+{
 
         char *buff = NULL;
         char *temp = NULL;
@@ -474,8 +481,8 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream, const c
                                  const char* upstreamhost, const char* upstreamport)
 {
 
-        char* xprt = "sock";
-        char* auth = "munge";
+        char* xprt = DEFAULT_XPRT;
+        char* auth = DEFAULT_AUTH;
         int rc = 0;
 
         //FIXME TODO need to have in the message the xprt and the auth, because we cannot get them from the args in the cb
@@ -490,7 +497,11 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream, const c
         msglog(LDMSD_LINFO, SAMP " Issuing commands to ldmsd_controller for '%s'\n", cmd);
 
         if (!strcmp(cmd, SETUP_FEEDBACK)){
-
+                //SETUP_FEEDBACK needs myhost, myport, myxprt, myauth, but not mystream, and it needs upstream host, xprt, and port
+                //PROPOGATE --- FOR EITHER SETUP_FEEDBACK or TEARDOWN_FEEDBACK need all the upstream info
+                //MEANS WHEN UNPACKING NEVER NEED MYSTREAM (and FIRST one never needs it) AND NEED EVERYTHING OR NOTHING FOR UPSTREAM
+                //FINAL ONE DOESNT NEED AN UPSTREAM OR A MYSTREAM FOR THIS, BUT IT HAS AN UPSTREAMNAME USED IN FOR THE PREVIOUS ONE.
+                //MEANS THE FIRST ONE DOESNT NEED MYSTREAM, BUT IT DOES EXIST SINCE IT IS USED FOR THE FIRST CONNECTION
                 rc = snprintf(teststring, BUFLENm1,
                               "echo \"prdcr_add host=%s xprt=%s port=%s interval=2000000 type=active name=%s\" | ldmsd_controller -h %s -p %s -x %s -a %s",
                               upstreamhost, xprt, upstreamport, prdcrname, myhost, myport, xprt, auth);
@@ -515,6 +526,11 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream, const c
                 rc = 0;
 
         } else if (!strcmp(cmd, TEARDOWN_FEEDBACK)){
+                //TEARDOWN_FEEDBACK needs myhost, myport, myxprt, myauth, but not mystream, and it needs nothing from the upstream
+                //PROPOGATE --- FOR EITHER SETUP_FEEDBACK or TEARDOWN_FEEDBACK need all the upstream info
+                //MEANS THAT WHEN UNPACKING NEVER NEED MYSTREAM (and FIRST ONE NEVER NEEDS it) AND NEED EVERYTING OR NOTHING FOR UPSTREAM
+                //FINAL ONE DOESNT NEED ANYTHING FOR THIS AND NO FIELDS ARE USED HERE, BUT THEY ARE ALL USED IN PROPOGATE
+                //MEANS THE FIRST ONE DOESNT NEED MYSTREAM, BUT IT DOES EXIST SINCE IT IS USED FOR THE FIRST CONNECTION
 
                 //TODO: doublecheck order
                 rc = snprintf(teststring, BUFLENm1,
@@ -595,6 +611,7 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
                myhost, myport, dynstream, prdcrname, upstreamhost, upstreamport, upstreamcmdstream, sendon);
 
         //1) use ldmsd_controller to tell this daemon on myhost myport to subscribe to stream dynstream from upstreamhost.
+        //OR if tear down, to tear down
         rc = call_ldmsd_controller(cmd, dynstream, prdcrname,  myhost, myport, upstreamhost, upstreamport);
         if (rc != 0){
                 //will not setup a feedback for this, if I cannot call ldmsd_controller to listen to the dynamic stream
