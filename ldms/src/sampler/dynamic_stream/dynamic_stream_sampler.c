@@ -97,7 +97,6 @@ static struct ldmsd_plugin *myself;
 #define PRDCR_STOP_FMT "prdcr_stop name=%s"
 #define PRDCR_DEL_FMT "prdcr_del name=%s"
 
-//START HERE....next have to add xprt and auth to the parsing
 
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
@@ -124,13 +123,13 @@ static int sample(struct ldmsd_sampler *self)
 	return 0;
 }
 
-static int propogate_feedback(const char* cmd, const char* dest,
-                              const char* port, const char* upstreamcmdstream,
+static int propogate_feedback(const char* cmd,
+                              const char* dest, const char* port,
+                              const char* xprt, const char* auth,
+                              const char* upstreamcmdstream,
                               const char* dyn_stream, const char* prdcrname,
                               char* list){
 
-        char* xprt = DYN_DEFAULT_XPRT;
-        char* auth = DYN_DEFAULT_AUTH;
         jbuf_t jb;
         ldms_t ldms = NULL;
         int rc = 0;
@@ -203,11 +202,11 @@ static int propogate_feedback(const char* cmd, const char* dest,
 }
 
 
-static int turnaround(char* dest, const char* port, const char* dyn_stream)
+static int turnaround(char* dest, const char* port,
+                      const char* xprt, const char* auth,
+                      const char* dyn_stream)
 {
 
-        char* xprt = DYN_DEFAULT_XPRT;
-        char* auth = DYN_DEFAULT_AUTH;
         char* teststr = "This is a test return";
         ldms_t ldms = NULL;
         int rc = 0;
@@ -285,7 +284,9 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 static int parse_feedback_message(const char* msg, int msg_len,
                                   char** dynstream_e, char** prdcrname_e,
                                   char** myhost_e, char** myport_e,
+                                  char** myxprt_e, char** myauth_e,
                                   char** upstreamhost_e, char** upstreamport_e,
+                                  char** upstreamxprt_e, char** upstreamauth_e,
                                   char** upstreamcmdstream_e,
                                   char** sendon_e)
 {
@@ -295,10 +296,17 @@ static int parse_feedback_message(const char* msg, int msg_len,
 
         char *dynstream = NULL;
         char *prdcrname = NULL;
+
         char *myhost = NULL;
         char *myport = NULL;
+        char *myxprt = NULL;
+        char *myauth = NULL;
+        char *mycmdstream = NULL;
+
         char *upstreamport = NULL;
         char *upstreamhost = NULL;
+        char *upstreamxprt = NULL;
+        char *upstreamauth = NULL;
         char *upstreamcmdstream = NULL;
         char *sendon = NULL;
 
@@ -422,16 +430,27 @@ static int parse_feedback_message(const char* msg, int msg_len,
                 tok = strtok_r(NULL, "@", &saveptr);
                 if (tok != NULL){
                         myport = strdup(tok);
-                        // i don't cane about my own cmdstream
-                        // not checking for too many fields
+                        tok = strtok_r(NULL, "@", &saveptr);
+                        if (tok != NULL){
+                                mycmdstream = strdup(tok);
+                                tok = strtok_r(NULL, "@", &saveptr);
+                                if (tok != NULL){
+                                        myxprt = strdup(tok);
+                                        myauth = strdup(saveptr);
+                                } else {
+                                        myxprt = strdup(DYN_DEFAULT_XPRT);
+                                        myauth = strdup(DYN_DEFAULT_AUTH);
+                                }
+                        }
                 }
         }
 
         if (!myhost || (strlen(myhost) == 0) ||
-            !myport || (strlen(myport) == 0)){
-                msglog(LDMSD_LERROR, SAMP
-                       " Error: Bad msg params myhost = '%s' myport = '%s'\n",
-                       myhost, myport);
+            !myport || (strlen(myport) == 0) ||
+            !mycmdstream || (strlen(mycmdstream) == 0)){
+                msglog(LDMSD_LERROR, SAMP " Error: Bad msg params"
+                       " myhost = '%s' myport = '%s' mycmdstream = '%s'\n",
+                       myhost, myport, mycmdstream);
                 rc = -1;
                 goto bad_params;
         }
@@ -451,11 +470,26 @@ static int parse_feedback_message(const char* msg, int msg_len,
                 if (tok != NULL){
                         upstreamhost = strdup(tok);
                         tok = strtok_r(NULL, "@", &saveptr);
-                        // upstreamport is a char
-                        upstreamport = strdup(tok);
-                        upstreamcmdstream = strdup(saveptr);
+                        if (tok != NULL){
+                                upstreamport = strdup(tok);
+                                tok = strtok_r(NULL, "@", &saveptr);
+                                if (tok != NULL){
+                                        upstreamcmdstream = strdup(tok);
+                                        tok = strtok_r(NULL, "@", &saveptr);
+                                        if (tok != NULL){
+                                                upstreamxprt = strdup(tok);
+                                                upstreamauth = strdup(saveptr);
+                                        } else {
+                                                upstreamxprt =
+                                                        strdup(DYN_DEFAULT_XPRT);
+                                                upstreamauth =
+                                                        strdup(DYN_DEFAULT_AUTH);
+                                        }
+                                }
+                        }
                 }
         }
+
         if (!upstreamhost || (strlen(upstreamhost) == 0) ||
             !upstreamport || (strlen(upstreamport) == 0) ||
             !upstreamcmdstream || (strlen(upstreamcmdstream) == 0)){
@@ -472,12 +506,17 @@ static int parse_feedback_message(const char* msg, int msg_len,
 
 
  good_params:
+
         *dynstream_e = dynstream;
         *prdcrname_e = prdcrname;
         *myhost_e = myhost;
         *myport_e = myport;
+        *myxprt_e = myxprt;
+        *myauth_e = myauth;
         *upstreamhost_e = upstreamhost;
         *upstreamport_e = upstreamport;
+        *upstreamxprt_e = upstreamxprt;
+        *upstreamauth_e = upstreamauth;
         *upstreamcmdstream_e = upstreamcmdstream;
         *sendon_e = sendon;
         rc = 0;
@@ -497,19 +536,15 @@ static int parse_feedback_message(const char* msg, int msg_len,
         }
 
  out:
+        if (mycmdstream) free(mycmdstream); //don't need this
+        mycmdstream = NULL;
+
         if (buff) free(buff);
         if (temp) free(temp);
         if (dynlist) free(dynlist);
 
         if (jp) json_parser_free(jp);
         if (jdoc) json_entity_free(jdoc);
-
-        msglog(LDMSD_LINFO,
-               SAMP " my host = '%s' myport = '%s' dynstream = '%s'"
-               " prdcrname = '%s' "
-               "upstream host = '%s' upstream port = '%s' sendon list = '%s'\n",
-               *myhost_e, *myport_e, *dynstream_e, *prdcrname_e,
-               *upstreamhost_e, *upstreamport_e, *sendon_e);
 
         msglog(LDMSD_LDEBUG,
                SAMP " completed parse_feedback_message returning %d\n", rc);
@@ -523,12 +558,12 @@ static int parse_feedback_message(const char* msg, int msg_len,
 static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                                  const char* prdcrname,
                                  const char* myhost, const char* myport,
+                                 const char* myxprt, const char* myauth,
                                  const char* upstreamhost,
-                                 const char* upstreamport)
+                                 const char* upstreamport,
+                                 const char* upstreamxprt
+                                 )
 {
-
-        char* xprt = DYN_DEFAULT_XPRT;
-        char* auth = DYN_DEFAULT_AUTH;
         int rc = 0;
 
         //FIXME are there return values to system?
@@ -544,17 +579,12 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                SAMP " Issuing commands to ldmsd_controller for '%s'\n", cmd);
 
         if (!strcmp(cmd, SETUP_FEEDBACK)){
-                //SETUP_FEEDBACK needs myhost, myport, myxprt, myauth, but not mystream, and it needs upstream host, xprt, and port
-                //PROPOGATE --- FOR EITHER SETUP_FEEDBACK or TEARDOWN_FEEDBACK need all the upstream info
-                //MEANS WHEN UNPACKING NEVER NEED MYSTREAM (and FIRST one never needs it) AND NEED EVERYTHING OR NOTHING FOR UPSTREAM
-                //FINAL ONE DOESNT NEED AN UPSTREAM OR A MYSTREAM FOR THIS, BUT IT HAS AN UPSTREAMNAME USED IN FOR THE PREVIOUS ONE.
-                //MEANS THE FIRST ONE DOESNT NEED MYSTREAM, BUT IT DOES EXIST SINCE IT IS USED FOR THE FIRST CONNECTION
                 rc = snprintf(teststring, BUFLENm1,
                               "echo \"" PRDCR_ADD_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
-                              upstreamhost, xprt, upstreamport,
+                              upstreamhost, upstreamxprt, upstreamport,
                               PRDCR_ADD_INTERVAL, prdcrname,
-                              myhost, myport, xprt, auth);
+                              myhost, myport, myxprt, myauth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
@@ -562,7 +592,8 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 rc = snprintf(teststring, BUFLENm1,
                               "echo \"" PRDCR_SUBSCRIBE_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
-                              prdcrname, dynstream, myhost, myport, xprt, auth);
+                              prdcrname, dynstream,
+                              myhost, myport, myxprt, myauth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
@@ -570,7 +601,8 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 rc = snprintf(teststring, BUFLENm1,
                               "echo \"" PRDCR_START_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
-                              prdcrname, myhost, myport, xprt, auth);
+                              prdcrname,
+                              myhost, myport, myxprt, myauth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
@@ -578,17 +610,12 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 rc = 0;
 
         } else if (!strcmp(cmd, TEARDOWN_FEEDBACK)){
-                //TEARDOWN_FEEDBACK needs myhost, myport, myxprt, myauth, but not mystream, and it needs nothing from the upstream
-                //PROPOGATE --- FOR EITHER SETUP_FEEDBACK or TEARDOWN_FEEDBACK need all the upstream info
-                //MEANS THAT WHEN UNPACKING NEVER NEED MYSTREAM (and FIRST ONE NEVER NEEDS it) AND NEED EVERYTING OR NOTHING FOR UPSTREAM
-                //FINAL ONE DOESNT NEED ANYTHING FOR THIS AND NO FIELDS ARE USED HERE, BUT THEY ARE ALL USED IN PROPOGATE
-                //MEANS THE FIRST ONE DOESNT NEED MYSTREAM, BUT IT DOES EXIST SINCE IT IS USED FOR THE FIRST CONNECTION
-
                 //TODO: doublecheck order
                 rc = snprintf(teststring, BUFLENm1,
                               "echo \"" PRDCR_UNSUBSCRIBE_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
-                              prdcrname, dynstream, myhost, myport, xprt, auth);
+                              prdcrname, dynstream,
+                              myhost, myport, myxprt, myauth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
@@ -596,7 +623,8 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 rc = snprintf(teststring, BUFLENm1,
                               "echo \"" PRDCR_STOP_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
-                              prdcrname, myhost, myport, xprt, auth);
+                              prdcrname,
+                              myhost, myport, myxprt, myauth);
                 msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //FIXME: is there a time to wait?
                 system(teststring);
@@ -607,7 +635,8 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 //                rc = snprintf(teststring, BUFLENm1,
                 //                "echo \"" PRDCR_DEL_FMT "\" | "
                 //                LDMSD_CONTROLLER_FMT,
-                //                              prdcrname, myhost, myport, xprt, auth);
+                //                prdcrname,
+                //                myhost, myport, myxprt, myauth);
                 //                msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
                 //                //FIXME: is there a time to wait?
                 //                system(teststring);
@@ -632,8 +661,12 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         char *prdcrname = NULL;
         char *myhost = NULL;
         char *myport = NULL;
+        char *myxprt = NULL;
+        char *myauth = NULL;
         char *upstreamhost = NULL;
         char *upstreamport = NULL;
+        char *upstreamxprt = NULL;
+        char *upstreamauth = NULL;
         char *upstreamcmdstream = NULL;
         char *sendon = NULL;
 
@@ -641,8 +674,9 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
 
         // the host and port info will be used for ldmsd controller
         rc = parse_feedback_message(msg, msg_len, &dynstream, &prdcrname,
-                                    &myhost, &myport,
+                                    &myhost, &myport, &myxprt, &myauth,
                                     &upstreamhost, &upstreamport,
+                                    &upstreamxprt, &upstreamauth,
                                     &upstreamcmdstream, &sendon);
         if (rc != 0){
                 msglog(LDMSD_LDEBUG, SAMP
@@ -659,7 +693,9 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
                         system("sleep 20");
                         msglog(LDMSD_LINFO, SAMP " End of the line."
                                " Testing sending a message back down\n");
-                        turnaround("localhost", "52002", dynstream);
+                        turnaround("localhost", "52002",
+                                   DYN_DEFAULT_XPRT, DYN_DEFAULT_AUTH,
+                                   dynstream);
                 } else {
                         msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon. "
                                " No further actions on SETUP_FEEDBACK");
@@ -668,18 +704,26 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         }
 
         msglog(LDMSD_LINFO,
-               SAMP " my host = '%s' myport = '%s' dynstream = '%s'"
+               SAMP " myhost = '%s' myport = '%s'"
+               " myxprt = '%s' myauth = '%s'"
+               " dynstream = '%s'"
                " prdcrname = '%s'"
-               " upstream host = '%s' upstream port = '%s' upstreamcmd = '%s'"
+               " upstream host = '%s' upstream port = '%s'"
+               " upstream xprt = '%s' upstream auth = '%s'"
+               " upstreamcmd = '%s'"
                " sendon list = '%s'\n",
-               myhost, myport, dynstream, prdcrname,
-               upstreamhost, upstreamport, upstreamcmdstream, sendon);
+               myhost, myport, myxprt, myauth,
+               dynstream, prdcrname,
+               upstreamhost, upstreamport,
+               upstreamxprt, upstreamauth,
+               upstreamcmdstream, sendon);
 
         // 1) use ldmsd_controller to tell this daemon on myhost myport
         // to subscribe to stream dynstream from upstreamhost.
         // OR if teardown, to tear down
         rc = call_ldmsd_controller(cmd, dynstream, prdcrname,
-                                   myhost, myport, upstreamhost, upstreamport);
+                                   myhost, myport, myxprt, myauth,
+                                   upstreamhost, upstreamport, upstreamxprt);
         if (rc != 0){
                 // TODO will not setup a feedback for this, if I cannot call
                 // ldmsd_controller to listen to the dynamic stream
@@ -697,7 +741,8 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         if (!strcmp(cmd, SETUP_FEEDBACK)){
                 msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n",
                        dynstream);
-                client = ldmsd_stream_subscribe(dynstream, dynamic_stream_recv_cb,
+                client = ldmsd_stream_subscribe(dynstream,
+                                                dynamic_stream_recv_cb,
                                                 myself);
                 if (!client){
                         msglog(LDMSD_LERROR,
@@ -719,6 +764,7 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         // 3) have stripped off my daemon and send the message to upstream
         // so that it can do the same up the stream
         rc = propogate_feedback(cmd, upstreamhost, upstreamport,
+                                upstreamxprt, upstreamauth,
                                 upstreamcmdstream, dynstream,
                                 prdcrname, sendon);
         if (rc)
@@ -741,8 +787,12 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         if (prdcrname) free(prdcrname);
         if (myhost) free(myhost);
         if (myport) free(myport);
+        if (myxprt) free(myxprt);
+        if (myauth) free(myauth);
         if (upstreamhost) free(upstreamhost);
         if (upstreamport) free(upstreamport);
+        if (upstreamxprt) free(upstreamxprt);
+        if (upstreamauth) free(upstreamauth);
         if (upstreamcmdstream) free(upstreamcmdstream);
         if (sendon) free(sendon);
 
