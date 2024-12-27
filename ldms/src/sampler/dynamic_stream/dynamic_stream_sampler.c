@@ -737,7 +737,10 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
 
         // 2) As a test, set up a callback for when receive a message
         // on the dynamic stream.
-        // FIXME TODO This may end up being removed at some points
+        // FIXME TODO This may end up being removed at some point
+        // NOTE: the last ldmsd doesn't subscribe nor does he have a callback,
+        // BUT someone can send to him and he will pass it on -
+        // is this what should happen? TODO CHECK
         if (!strcmp(cmd, SETUP_FEEDBACK)){
                 msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n",
                        dynstream);
