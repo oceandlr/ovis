@@ -35,7 +35,7 @@ Name of the stream to which to subscribe for the command messages. Currently tis
 .RE
 
 .SH BUGS
-This is under development and is junk.
+This is under development and is not guarenteed to work and is subject to change without notice.
 
 There is a temporary functionality that has the final one send a message down the new stream.
 
@@ -62,6 +62,8 @@ An external source will call the publisher like so:
 
 where cmdstream.in looks like:
 {"cmd" : "SETUP_FEEDBACK", "stream" : "dynamicbar", "prdcrname" : "zedprdcr", "list" : "localhost@52001@cmd_stream52001:localhost@52002@cmd_stream52002:localhost@52003@cmd_stream52003"}
+or
+{"cmd" : "SETUP_FEEDBACK", "stream" : "dynamicbar", "prdcrname" : "zedprdcr", "list" : "localhost@52001@cmd_stream52001@sock@munge:localhost@52002@cmd_stream52002:localhost@52003@cmd_stream52003"}
 Where
 .TP
 cmd=SETUP_FEEDBACK
@@ -76,9 +78,12 @@ prdcrname=<upstream prdcrname used in the add_prdcr call to ldmsd_controller>
 .TP
 list = <list>
 .br
-This is a list of hosts of the upstream L's, what port on which they sit, and what command stream they listen to. This latter is because the callback blocks
-to adding new subscribers on the same stream. It is possible that we could do just the functionality here by sending the message up the stream to all the
-plugins without the canging of te message, but it is written this way for greatest generality.
+This is a list of hosts of the upstream L's, what port on which they sit,
+what command stream they listen to, and optionally the host and auth (these default to localhost and munge).
+They need a different command stream name
+because the callback blocks to adding new subscribers on the same stream.
+It is possible that we could do just the functionality here by sending the message up the stream to all the
+plugins without the changing of the message, but it is written this way for greatest generality.
 
 There is not complete robust-to-failure parsing.
 .RE
@@ -100,4 +105,4 @@ and prints out what it got off the stream.
 
 
 .SH SEE ALSO
-ldmsd(8), ldms_quickstart(7), ldmsd_controller(8), ldms_sampler_base(7), ldmsd_stream_publish(7), Plugin_stream_csv_store(7)
+ldmsd(8), ldms_quickstart(7), ldmsd_controller(8), ldms_sampler_base(7), ldmsd_stream_publish(7), ldmsd_stream_publish_iterator(7)

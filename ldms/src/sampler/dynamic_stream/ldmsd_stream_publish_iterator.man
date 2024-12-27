@@ -1,0 +1,45 @@
+.\" Manpage for ldmsd_stream_publish_iterator.c
+.\" Contact ovis-help@ca.sandia.gov to correct errors or typos.
+.TH man 7 "27 Dec 2024" "v4" "ldmsd_stream_publish_iterator man page"
+
+.SH NAME
+ldmsd_stream_publish_iterator - man page for the ldmsd_stream_publish_iterator
+
+
+.SH SYNOPSIS
+
+.SH DESCRIPTION
+This is a test code to be used with the dynamic stream sampler. This will be the basis
+of a code that might call and action on the database and then send that info the dynamic stream.
+It is based on ldmsd_stream_publisher.
+
+
+.SH BUGS
+This is underdevelopment and is not guarenteed to work and is subject to change without notice
+
+.SH EXAMPLES
+.PP
+Assuming hosts on ports 52001, 52002, and 52003 have been started and they have loaded the dynamic_stream_sampler configured like:
+.nf
+load name=dynamic_stream_sampler
+config name=dynamic_stream_sampler producer=host1 instance=host1/hello_sampler stream=cmd_stream52001 component_id=1
+start name=dynamic_stream_sampler interval=2000000 offset=0
+
+Setup the dynamic stream via:
+.nf
+ ./ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -f /home/gentile/Work/Build/streams/cmdstream.in -h localhost
+
+.nf
+cat cmdstream.in
+{"cmd" : "SETUP_FEEDBACK", "stream" : "dynamicbar", "prdcrname" : "zedprdcr", "list" : "localhost@52001@cmd_stream52001:localhost@52002@cmd_stream52002:localhost@52003@cmd_stream52003"}
+
+.nf
+Start the iterator via:
+.nf
+ ./ldmsd_stream_publish_iterator -x sock -p 52003 -s dynamicbar -t string -a munge -f /home/gentile/Work/Build/streams/thisisatest.txt  -h localhost -r 5 -i 5000000
+.nf
+and it will send the contents of thisisatest.txt down the dynamicbar stream
+.fi
+
+.SH SEE ALSO
+ldmsd_stream_publish(7), Plugin_dynamic_stream_sampler(7)

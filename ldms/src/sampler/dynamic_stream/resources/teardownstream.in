@@ -1,0 +1,1 @@
+{"cmd" : "TEARDOWN_FEEDBACK", "stream" : "dynamicbar", "prdcrname" : "zedprdcr", "list" : "localhost@52001@cmd_stream52001:localhost@52002@cmd_stream52002:localhost@52003@cmd_stream52003"}

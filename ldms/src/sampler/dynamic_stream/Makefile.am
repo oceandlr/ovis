@@ -27,7 +27,7 @@ ldmsd_stream_publish_iterator_LDADD = $(COMMON_LIBADD) \
 			$(top_builddir)/lib/src/ovis_util/libovis_util.la \
 			$(top_builddir)/ldms/src/ldmsd/libldmsd_stream.la
 ldmsd_stream_publish_iterator_LDFLAGS = $(AM_LDFLAGS) -pthread
-###dist_man7_MANS += ldmsd_stream_publish_iterator.man
+dist_man7_MANS += ldmsd_stream_publish_iterator.man
 
 
 endif

@@ -45,7 +45,7 @@ void usage(int argc, char **argv)
 	printf("usage: %s -x <xprt> -h <host> -p <port> "
 	       "-s <stream-name> -t <stream-type> "
 	       "-f <file> -a <auth> -A <auth-opt> "
-	       "-l -r <count> -i <microsec> \n",
+	       "-r <count> -i <microsec> \n",
 	       argv[0]);
 	exit(1);
 }
