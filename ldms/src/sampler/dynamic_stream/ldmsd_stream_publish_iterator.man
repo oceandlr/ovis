@@ -36,9 +36,9 @@ cat cmdstream.in
 .nf
 Start the iterator via:
 .nf
- ./ldmsd_stream_publish_iterator -x sock -p 52003 -s dynamicbar -t string -a munge -f /home/gentile/Work/Build/streams/thisisatest.txt  -h localhost -r 5 -i 5000000
+ ./ldmsd_stream_publish_iterator -x sock -p 52003 -s dynamicbar -a munge -h localhost -r 5 -i 5000000 -q QUERY_1
 .nf
-and it will send the contents of thisisatest.txt down the dynamicbar stream
+and it will sake do the query and send a fake result down the dynamicbar stream
 .fi
 
 .SH SEE ALSO
