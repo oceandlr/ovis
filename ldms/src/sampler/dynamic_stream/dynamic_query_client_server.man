@@ -1,0 +1,92 @@
+.\" Manpage for dynamic_query_client/server
+.\" Contact ovis-help@ca.sandia.gov to correct errors or typos.
+.TH man 7 "31 Dec 2024" "v4" "ldmsd_stream_publish_iterator man page"
+
+.SH NAME
+dynamic_query_client_server - man page for the dynamic_query_client/server utilities
+
+
+.SH SYNOPSIS
+
+.SH DESCRIPTION
+This is a test code to be used with the dynamic stream sampler. This will be the basis
+of a code that might call and action on the database and then send that info the dynamic stream.
+It is based on ldmsd_stream_publisher.
+
+dynamic_query_client - sends a query tag to the dynamic_query_server which is listening on a port
+
+dynamic_query_server - listens on a port for a query tag. Based on the tag, it fake makes a call and then
+sends the fake result down the newly created dynamic stream.
+
+.SH CONFIGURATION ATTRIBUTE SYNTAX - CLIENT
+.TP
+.BR command line argv
+<query tag>
+.br
+query to be sent
+.RE
+
+.SH CONFIGURATION ATTRIBUTE SYNTAX - SERVER
+.TP
+.BR host
+-h <hostname>
+.br
+hostname of the ldmsd it will send the response to
+
+.BR port
+-p <port>
+.br
+port of the ldmsd it will send the response to
+
+.BR auth
+-a <auth>
+.br
+auth of the ldmsd it will send the response to (think there are other flags related to auth as well)
+
+.BR stream
+-s <dynamic_stream>
+.br
+stream to which it will publish on the ldmsd
+
+.BR HARDWIRED PORT
+.br
+there is a hardwired port 53000 which is the port on which this receives query messages
+
+.RE
+
+.SH BUGS
+This is underdevelopment and is not guarenteed to work and is subject to change without notice
+
+.SH EXAMPLES
+.PP
+Assuming hosts on ports 52001, 52002, and 52003 have been started and they have loaded the dynamic_stream_sampler configured like:
+.nf
+load name=dynamic_stream_sampler
+config name=dynamic_stream_sampler producer=host1 instance=host1/hello_sampler stream=cmd_stream52001 component_id=1
+start name=dynamic_stream_sampler interval=2000000 offset=0
+
+Setup the dynamic stream via:
+.nf
+ ./ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -f /home/gentile/Work/Build/streams/cmdstream.in -h localhost
+
+.nf
+cat cmdstream.in
+{"cmd" : "SETUP_FEEDBACK", "stream" : "dynamicbar", "prdcrname" : "zedprdcr", "list" : "localhost@52001@cmd_stream52001:localhost@52002@cmd_stream52002:localhost@52003@cmd_stream52003"}
+
+.nf
+Start the server via:
+.nf
+ ./dynamic_query_server -x sock -p 52003 -s dynamicbar -a munge -h localhost
+.nf
+
+Start the client via:
+.nf
+ ./dynamic_query_client QUERY_1
+.nf
+
+.nf
+and the server will sfke do the query and send a fake result down the dynamicbar stream
+.fi
+
+.SH SEE ALSO
+ldmsd_stream_publish(7), Plugin_dynamic_stream_sampler(7)
