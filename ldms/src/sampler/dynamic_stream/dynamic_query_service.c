@@ -88,7 +88,9 @@ static const char *short_opts = "h:p:s:x:a:A:";
 
 
 void cleanup(){
-
+        printf("In cleanup\n");
+        close(SocketFD);
+        close(ConnectFD);
         ldms_xprt_close(ldms);
 }
 
@@ -105,22 +107,25 @@ jbuf_t execResultsQuery(int qu){
         int rc = 0;
         int len;
         jbuf_t jb;
-        char s[100] = "This is the result";
+        char* s = "This is the result";
 
         // this will execute a query on the database (in another thread?)
-        printf("Should be doing query %d '%s'\n", qu, queries[qu].qstring);
+        printf("in exec: Should be doing query %d '%s'\n",
+               qu, queries[qu].qstring);
 
         // will need to know how to match up queries to generate
         // values and queries to get their results
         // should this be a callback on the result being obtained?
 
-        len = strlen(s);
-        //Get rid of trailing whitespace and newlines
-        while (len &&
-               (isspace(s[len-1]) || s[len-1] == '\n')) {
-                len--;
+        if (0){
+                len = strlen(s);
+                //Get rid of trailing whitespace and newlines
+                while (len &&
+                       (isspace(s[len-1]) || s[len-1] == '\n')) {
+                        len--;
+                }
+                s[len] = '\0';
         }
-        s[len] = '\0';
 
         printf("Should be building the jbuf\n");
 
@@ -128,12 +133,28 @@ jbuf_t execResultsQuery(int qu){
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out;
-        jb = jbuf_append_attr(jb, MSG_KEY, "\"%s\"", s);
-        if (!jb) goto out;
-        jb = jbuf_append_str(jb, "}}");
-        if (!jb) goto out;
-
-        printf("Should be publishing '%s'\n", jb->buf);
+        if (1){
+                //TODO: this does not work. note the ldmsd_stream_publish with more than one field does
+                //this blocks and does not return after the publish
+                jb = jbuf_append_attr(jb, MSG_KEY, "\"%s\",", s);
+                if (!jb) goto out;
+                jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\"", s);
+                if (!jb) goto out;
+                jb = jbuf_append_str(jb, "}}");
+                if (!jb) goto out;
+        } else {
+                //TODO: this works
+                //this does not block and does return after the publish
+                jb = jbuf_append_attr(jb, MSG_KEY, "\"%s\"", s);
+                if (!jb) goto out;
+                jb = jbuf_append_str(jb, "}}");
+                if (!jb) goto out;
+        }
+        if (jb) {
+                printf("Should be publishing '%s'\n", jb->buf);
+        } else {
+                printf("warning --- jb is null\n");
+        }
 
  out:
 
@@ -289,17 +310,33 @@ void handleMsg(int CFD){
                 goto out;
         }
 
+
+        if (1){
+                printf("Should be setting up ldmsd connection inthe thread now\n");
+                rc = setupLDMSD();
+                if (rc != 0){
+                        printf("Cannot setup LDMSD\n");
+                        exit(-1);
+                }
+        }
+
+        printf("Should be publishing now\n");
         rc = ldmsd_stream_publish(ldms, stream, typ,
                                   jb->buf, jb->cursor+1);
+        printf("After publishing\n");
         if (rc) {
                 printf("Error on stream publish\n");
-               goto out;
+                goto out;
         }
- out:
 
+
+ out:
         if (jb)
                 jbuf_free(jb);
 
+        //will close ldms in the cleanup
+
+        printf("returning\n");
         return;
 }
 
@@ -318,11 +355,13 @@ int main(int argc, char **argv){
                 exit(-1);
         }
 
-
-        rc = setupLDMSD();
-        if (rc != 0){
-                printf("Cannot setup LDMSD\n");
-                exit(-1);
+        if (0){
+                //try moving this into the thread and see if that changes things
+                rc = setupLDMSD();
+                if (rc != 0){
+                        printf("Cannot setup LDMSD\n");
+                        exit(-1);
+                }
         }
 
 	struct sockaddr_in stSockAddr;
@@ -364,13 +403,12 @@ int main(int argc, char **argv){
 		if (pid == 0){
 	                close(SocketFD);
                         handleMsg(ConnectFD);
+                        printf("After handleMsg and should be exiting\n");
                         exit(0);
                 } else {
                         close(ConnectFD);
                 }
 	}
-
-	close(SocketFD);
 
  out:
         cleanup();

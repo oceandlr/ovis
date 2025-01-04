@@ -70,8 +70,10 @@
 #include <signal.h>
 
 #define MSG_KEY "msg_key"
+#define RESPONSE_KEY "response_key"
+#define UUID_KEY "uuid_key"
 #define NUM_QUERIES 3
-#define MAX_MBUF 1024
+#define MAX_MBUF 2048
 #define AUTH_OPT_MAX 128
 #define DYNAMIC_SERVICE_PORT 53000
 #define DYNAMIC_SERVICE_LISTEN_BACKLOG 128

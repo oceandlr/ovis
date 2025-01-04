@@ -209,6 +209,7 @@ static int turnaround(char* dest, const char* port,
 
         char* teststr = "This is a test return";
         ldms_t ldms = NULL;
+        jbuf_t jb;
         int rc = 0;
 
         //set up the connection
@@ -225,20 +226,39 @@ static int turnaround(char* dest, const char* port,
                 goto out;
         }
 
-        //tell the dest on cmd to listen to the new stream
-        rc = ldmsd_stream_publish(ldms, dyn_stream, LDMSD_STREAM_STRING,
-                                  teststr, strlen(teststr)+1);
+        //sending to the prev hardwired guy
+        jb = jbuf_new();
+        if (!jb) goto out;
+        jb = jbuf_append_str(jb, "{");
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", "foo");
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, DYNSTREAM_KEY, "\"%s\",", "bar");
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, PRDCRNAME_KEY, "\"%s\",", "zed");
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, LIST_KEY, "\"%s\"", "wugga");
+        if (!jb) goto out;
+        jb = jbuf_append_str(jb, "}}"); if (!jb) goto out;
+        if (0){
+                rc = ldmsd_stream_publish(ldms, dyn_stream, LDMSD_STREAM_STRING,
+                                          teststr, strlen(teststr)+1);
+        } else {
+                rc = ldmsd_stream_publish(ldms, dyn_stream, LDMSD_STREAM_JSON,
+                                  jb->buf, jb->cursor+1);
+        }
         if (rc){
                 msglog(LDMSD_LERROR,
                        SAMP " Error %d publishing to '%s'\n", rc, dyn_stream);
                 goto out;
-
         }
 
         msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", teststr);
         goto out;
 
  out:
+        //TODO: do I need to close any ldms thing here
+        if (jb) jbuf_free(jb);
         return rc;
 
 }
