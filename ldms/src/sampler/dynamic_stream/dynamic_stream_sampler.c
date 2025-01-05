@@ -649,20 +649,26 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                msglog(LDMSD_LCRITICAL,
-                       SAMP " Need to debug prdcr_del before it can be issued."
-                       " Not executing it\n");
-                //                rc = snprintf(teststring, BUFLENm1,
-                //                "echo \"" PRDCR_DEL_FMT "\" | "
-                //                LDMSD_CONTROLLER_FMT,
-                //                prdcrname,
-                //                myhost, myport, myxprt, myauth);
-                //                msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n", teststring);
-                //                //FIXME: is there a time to wait?
-                //                system(teststring);
-
+                //TODO FIXME: This is still not working right.
+                if (1){
+                        msglog(LDMSD_LCRITICAL, SAMP
+                               " Need to debug prdcr_del before it can be issued."
+                               " Not executing it\n");
+                } else {
+                        msglog(LDMSD_LCRITICAL,
+                               SAMP " about to issue prdcr_del after sleep (time to check the controller via command line)\n.");
+                        sleep(120);
+                        rc = snprintf(teststring, BUFLENm1,
+                                      "echo \"" PRDCR_DEL_FMT "\" | "
+                                      LDMSD_CONTROLLER_FMT,
+                                      prdcrname,
+                                      myhost, myport, myxprt, myauth);
+                        msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n",
+                               teststring);
+                        //FIXME: is there a time to wait?
+                        system(teststring);
+                }
                 rc = 0;
-
         } else {
                 msglog(LDMSD_LCRITICAL, SAMP " unknown cmd '%s'\n", cmd);
                 rc = -1;

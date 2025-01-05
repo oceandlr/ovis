@@ -129,7 +129,7 @@ jbuf_t execResultsQuery(int qu, char *uuid){
         s[len] = '\0';
         }
 
-        printf("Should be building the jbuf\n");
+        printf("Building the jbuf\n");
 
         jb = jbuf_new();
         if (!jb) goto out;
@@ -142,10 +142,8 @@ jbuf_t execResultsQuery(int qu, char *uuid){
         jb = jbuf_append_str(jb, "}}");
         if (!jb) goto out;
 
-        if (jb) {
-                printf("Should be publishing '%s'\n", jb->buf);
-        } else {
-                printf("warning --- jb is null\n");
+        if (!jb) {
+                printf("Warning --- jb is null\n");
         }
 
  out:
@@ -367,14 +365,16 @@ void handleMsg(int CFD){
                 goto out;
         }
 
-        printf("Should be setting up ldmsd connection in the thread now\n");
+        printf("Setting up ldmsd connection in the thread now\n");
         rc = setupLDMSD();
         if (rc != 0){
                 printf("Cannot setup LDMSD\n");
                 goto out;
         }
 
-        printf("Should be publishing now\n");
+        //NOTE: had to move the connection to the thread for this not
+        //to block. Can do iterations in the thread and it will work ok.
+        printf("Publishing now\n");
         rc = ldmsd_stream_publish(ldms, stream, typ,
                                   jb->buf, jb->cursor+1);
         printf("After publishing\n");
