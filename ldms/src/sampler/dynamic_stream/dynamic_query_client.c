@@ -47,6 +47,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include "dynamic_query.h"
+#include <ovis_json/ovis_json.h>
+#include <ovis_util/util.h>
 
 static struct sockaddr_in stSockAddr;
 static int Res = -1;
@@ -116,8 +118,9 @@ static int setupSocket(){
 }
 
 
-static int makeQuery(char* qu){
+static int makeQuery(char* qu, char* uuid){
 
+        jbuf_t jb;
         char sendBuff[MAX_MBUF];
         int rc;
 
@@ -125,13 +128,32 @@ static int makeQuery(char* qu){
                 return -1;
         }
 
-        snprintf(sendBuff, MAX_MBUF, "%s", qu);
+        jb = jbuf_new();
+        if (!jb) goto out;
+        jb = jbuf_append_str(jb, "{");
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, QUERY_KEY, "\"%s\",", qu);
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\"", uuid);
+        if (!jb) goto out;
+        jb = jbuf_append_str(jb, "}}");
+        if (!jb) goto out;
+
+        snprintf(sendBuff, MAX_MBUF, "%s", jb->buf);
 
         /* perform write operations ... */
         printf("Sending %s\n", sendBuff);
         rc = write(SocketFD, sendBuff, strlen(sendBuff));
 
-        return 0;
+ out:
+        if (!jb){
+                printf("Can't build jbuf\n");
+                rc = -1;
+        } else {
+                rc = 0;
+        }
+
+        return rc;
 };
 
 
@@ -143,8 +165,8 @@ int main(int argc, char **argv){
         signal(SIGINT, signal_handler);
         signal(SIGHUP, signal_handler);
 
-        if (argc != 2){
-                printf("Usage ./dynamic_query_client <QUERY_1>\n");
+        if (argc != 3){
+                printf("Usage ./dynamic_query_client <QUERY_1> <UUID>\n");
                 exit (-1);
         }
 
@@ -154,6 +176,6 @@ int main(int argc, char **argv){
                 exit(-1);
         }
 
-        rc = makeQuery(argv[1]);
+        rc = makeQuery(argv[1], argv[2]);
         return rc;
 }

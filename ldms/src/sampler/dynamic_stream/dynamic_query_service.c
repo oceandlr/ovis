@@ -91,7 +91,10 @@ void cleanup(){
         printf("In cleanup\n");
         close(SocketFD);
         close(ConnectFD);
-        ldms_xprt_close(ldms);
+        if (ldms)
+                ldms_xprt_close(ldms);
+        ldms = NULL;
+
 }
 
 
@@ -102,7 +105,7 @@ void signal_handler(int signum){
 }
 
 
-jbuf_t execResultsQuery(int qu){
+jbuf_t execResultsQuery(int qu, char *uuid){
 
         int rc = 0;
         int len;
@@ -116,15 +119,14 @@ jbuf_t execResultsQuery(int qu){
         // will need to know how to match up queries to generate
         // values and queries to get their results
         // should this be a callback on the result being obtained?
-
         if (0){
-                len = strlen(s);
-                //Get rid of trailing whitespace and newlines
-                while (len &&
-                       (isspace(s[len-1]) || s[len-1] == '\n')) {
-                        len--;
-                }
-                s[len] = '\0';
+        len = strlen(s);
+        //Get rid of trailing whitespace and newlines
+        while (len &&
+               (isspace(s[len-1]) || s[len-1] == '\n')) {
+                len--;
+        }
+        s[len] = '\0';
         }
 
         printf("Should be building the jbuf\n");
@@ -133,23 +135,13 @@ jbuf_t execResultsQuery(int qu){
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out;
-        if (1){
-                //TODO: this does not work. note the ldmsd_stream_publish with more than one field does
-                //this blocks and does not return after the publish
-                jb = jbuf_append_attr(jb, MSG_KEY, "\"%s\",", s);
-                if (!jb) goto out;
-                jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\"", s);
-                if (!jb) goto out;
-                jb = jbuf_append_str(jb, "}}");
-                if (!jb) goto out;
-        } else {
-                //TODO: this works
-                //this does not block and does return after the publish
-                jb = jbuf_append_attr(jb, MSG_KEY, "\"%s\"", s);
-                if (!jb) goto out;
-                jb = jbuf_append_str(jb, "}}");
-                if (!jb) goto out;
-        }
+        jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\",", s);
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\"", uuid);
+        if (!jb) goto out;
+        jb = jbuf_append_str(jb, "}}");
+        if (!jb) goto out;
+
         if (jb) {
                 printf("Should be publishing '%s'\n", jb->buf);
         } else {
@@ -162,24 +154,89 @@ jbuf_t execResultsQuery(int qu){
 
 }
 
-int parseQuery(char* msg_buf){
-        int qu;
+int parseJSONQuery(char* msg_buf, int* qu, char**uuid){
+        //expects to get a message in json format {QUERY_KEY:foo, UUID_KEY:bar}
+
+        json_parser_t jp = NULL;
+        json_entity_t jdoc = NULL;
+        json_entity_t ent = NULL;
+
+        char* luuid = NULL;
+        int lqu = -1;
         int k;
+        int rc;
+
+
+        printf("Should be parsing the jbuf\n");
+
+        jp = json_parser_new(0);
+        if (!jp){
+                rc = errno;
+                printf(" read() error: %d\n", errno);
+                goto out;
+        }
+        rc = json_parse_buffer(jp, msg_buf, strlen(msg_buf), &jdoc);
+        if (rc) {
+                printf(" JSON parse failed: %d\n", rc);
+                goto out;
+        }
+
+        // which query
+        ent = json_value_find(jdoc, QUERY_KEY);
+        if (!ent){
+                printf(" No " QUERY_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                printf(" Error: " QUERY_KEY " must be a string\n");
+                goto out;
+        }
 
         for (k = 0; k < NUM_QUERIES; k++){
-                if (!strcmp(queries[k].qkey, msg_buf)){
-                        qu = k;
+                if (!strcmp(queries[k].qkey, ent->value.str_->str)){
+                        lqu = k;
                         break;
                 }
         }
-        if (qu == -1){
+        if (lqu == -1){
                 printf("The query string is invalid '%s'\n",
-                       msg_buf);
+                       ent->value.str_->str);
+                rc = -1;
+                goto out;
         }
 
-        return qu;
-}
+        //uuid
+        ent = json_value_find(jdoc, UUID_KEY);
+        if (!ent){
+                printf(" No " UUID_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                printf(" Error: " UUID_KEY " must be a string\n");
+                goto out;
+        }
 
+        luuid = strdup(ent->value.str_->str);
+        if (!luuid){
+                rc = ENOMEM;
+                printf(" Out of memory\n");
+                goto out;
+        }
+
+ out:
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+
+        *uuid = luuid;
+        *qu = lqu;
+
+        return rc;
+
+}
 
 int parseArgs(int argc, char **argv){
         int opt, opt_idx;
@@ -282,11 +339,9 @@ int setupLDMSD(){
 void handleMsg(int CFD){
 
         char recvBuff[MAX_MBUF];
-        char tempBuff[MAX_MBUF];
-        char sendBuff[MAX_MBUF];
-
+        int numrcv;
         jbuf_t jb;
-	int numrcv;
+        char* uuid = NULL;
         int qu;
 	int rc;
 
@@ -296,28 +351,27 @@ void handleMsg(int CFD){
 	printf("Received %s\n", recvBuff);
 
 
-	qu = parseQuery(recvBuff);
-        if (qu == -1){
+        rc = parseJSONQuery(recvBuff, &qu, &uuid);
+        if (rc){
 		printf("Warning: ignoring bad query\n");
+                if (uuid) free(uuid);
 		return;
 	}
 
-        printf("Should be doing query %d '%s'\n", qu, queries[qu].qstring);
+        printf("Should be doing query %d '%s' uuid='%s'\n",
+               qu, queries[qu].qstring, uuid);
 
-        jb = execResultsQuery(qu);
+        jb = execResultsQuery(qu, uuid);
         if (jb == NULL){
                 printf("jb is null\n");
                 goto out;
         }
 
-
-        if (1){
-                printf("Should be setting up ldmsd connection inthe thread now\n");
-                rc = setupLDMSD();
-                if (rc != 0){
-                        printf("Cannot setup LDMSD\n");
-                        exit(-1);
-                }
+        printf("Should be setting up ldmsd connection in the thread now\n");
+        rc = setupLDMSD();
+        if (rc != 0){
+                printf("Cannot setup LDMSD\n");
+                goto out;
         }
 
         printf("Should be publishing now\n");
@@ -333,8 +387,12 @@ void handleMsg(int CFD){
  out:
         if (jb)
                 jbuf_free(jb);
-
-        //will close ldms in the cleanup
+        if (ldms)
+                ldms_xprt_close(ldms);
+        ldms = NULL;
+        if (uuid)
+                free(uuid);
+        uuid = NULL;
 
         printf("returning\n");
         return;
