@@ -118,10 +118,10 @@ static int setupSocket(){
 }
 
 
-static int makeQuery(char* qu, char* uuid){
+static int makeQuery(char* qu, char* uuid, char* argstring){
 
         jbuf_t jb;
-        char sendBuff[MAX_MBUF];
+        char sendBuff[MAXBUF];
         int rc;
 
         if (SocketFD == -1){
@@ -136,10 +136,16 @@ static int makeQuery(char* qu, char* uuid){
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\"", uuid);
         if (!jb) goto out;
+        if (argstring != NULL){
+                jb = jbuf_append_str(jb, ",");
+                if (!jb) goto out;
+                jb = jbuf_append_attr(jb, ARG_STR_KEY, "\"%s\"", argstring);
+                if (!jb) goto out;
+        }
         jb = jbuf_append_str(jb, "}}");
         if (!jb) goto out;
 
-        snprintf(sendBuff, MAX_MBUF, "%s", jb->buf);
+        snprintf(sendBuff, sizeof(sendBuff), "%s", jb->buf);
 
         /* perform write operations ... */
         printf("Sending %s\n", sendBuff);
@@ -165,8 +171,8 @@ int main(int argc, char **argv){
         signal(SIGINT, signal_handler);
         signal(SIGHUP, signal_handler);
 
-        if (argc != 3){
-                printf("Usage ./dynamic_query_client <QUERY_1> <UUID>\n");
+        if ((argc != 3) && (argc != 4)){
+                printf("Usage ./dynamic_query_client <QUERY_1> <UUID> (optional)<ARGSTRING>\n");
                 exit (-1);
         }
 
@@ -176,6 +182,7 @@ int main(int argc, char **argv){
                 exit(-1);
         }
 
-        rc = makeQuery(argv[1], argv[2]);
+        rc = makeQuery(argv[1], argv[2], (argc == 3? NULL: argv[3]));
+
         return rc;
 }

@@ -71,23 +71,12 @@
 #include "ldmsd.h"
 #include "ldmsd_stream.h"
 #include "../sampler_base.h"
-
-static char *stream;
-static struct ldmsd_plugin *myself;
+#include "dynamic_query_defs.h"
 
 #define TURNAROUND 1
 #define SAMP "dynamic_stream_sampler"
 #define DYN_DEFAULT_XPRT "sock"
 #define DYN_DEFAULT_AUTH "munge"
-#define SETUP_FEEDBACK "SETUP_FEEDBACK"
-#define TEARDOWN_FEEDBACK "TEARDOWN_FEEDBACK"
-#define CMD_STREAM_BASE "cmd_stream"
-#define CMD_KEY "cmd"
-#define PRDCRNAME_KEY "prdcrname"
-#define LIST_KEY "list"
-#define DYNSTREAM_KEY "stream"
-#define BUFLEN 2048
-#define BUFLENm1 2047
 #define LDMSD_CONTROLLER_FMT "ldmsd_controller -h %s -p %s -x %s -a %s"
 #define PRDCR_ADD_INTERVAL 20000000
 #define PRDCR_ADD_FMT "prdcr_add host=%s xprt=%s port=%s interval=%d type=active name=%s"
@@ -97,10 +86,10 @@ static struct ldmsd_plugin *myself;
 #define PRDCR_STOP_FMT "prdcr_stop name=%s"
 #define PRDCR_DEL_FMT "prdcr_del name=%s"
 
-
+static char *stream;
+static struct ldmsd_plugin *myself;
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
-
 
 
 static const char *usage(struct ldmsd_plugin *self)
@@ -123,18 +112,20 @@ static int sample(struct ldmsd_sampler *self)
 	return 0;
 }
 
-static int propogate_feedback(const char* cmd,
+static int propogate_feedback(int cmdidx,
                               const char* dest, const char* port,
                               const char* xprt, const char* auth,
                               const char* upstreamcmdstream,
                               const char* dyn_stream, const char* prdcrname,
-                              char* list){
+                              const char* list,
+                              const char* query, const char* uuid,
+                              const char* argstring){
 
         jbuf_t jb;
         ldms_t ldms = NULL;
         int rc = 0;
 
-        // For either SETUP_FEEDBACK or TEARDOWN_FEEDBACK need all upstreaminfo:
+        // For SETUP_FEEDBACK, QUERY_DB, and TEARDOWN_FEEDBACK need all upstreaminfo:
         // upstreamcmdstream name, upstreamhost, upstream auth, upstream xprt
         // these are not needed for the last one in the line
 
@@ -150,12 +141,26 @@ static int propogate_feedback(const char* cmd,
         if (!jb) goto out_1;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out_1;
-        jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", cmd);
+        jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", squeries[cmdidx].cmd);
         if (!jb) goto out_1;
         jb = jbuf_append_attr(jb, DYNSTREAM_KEY, "\"%s\",", dyn_stream);
         if (!jb) goto out_1;
-        jb = jbuf_append_attr(jb, PRDCRNAME_KEY, "\"%s\",", prdcrname);
-        if (!jb) goto out_1;
+        if (prdcrname){
+                jb = jbuf_append_attr(jb, PRDCRNAME_KEY, "\"%s\",", prdcrname);
+                if (!jb) goto out_1;
+        }
+        if (query){
+                jb = jbuf_append_attr(jb, QUERY_KEY, "\"%s\",", query);
+                if (!jb) goto out_1;
+        }
+        if (uuid){
+                jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\",", uuid);
+                if (!jb) goto out_1;
+        }
+        if (argstring){
+                jb = jbuf_append_attr(jb, ARG_STR_KEY, "\"%s\",", argstring);
+                if (!jb) goto out_1;
+        }
         jb = jbuf_append_attr(jb, LIST_KEY, "\"%s\"", list);
         if (!jb) goto out_1;
         jb = jbuf_append_str(jb, "}}"); if (!jb) goto out_1;
@@ -175,6 +180,7 @@ static int propogate_feedback(const char* cmd,
         }
 
         // if SETUP_FEEDBACK, tell dest on cmd to listen to the new stream.
+        // if QUERY_FEEDBACK, tell dest on cmd the message
         // if TEARDOWN_FEEDBACK, tell dest on cmd to teardown the new stream
         // info.
         rc = ldmsd_stream_publish(ldms, upstreamcmdstream, LDMSD_STREAM_JSON,
@@ -191,7 +197,8 @@ static int propogate_feedback(const char* cmd,
         goto out;
 
  out_1:
-        msglog(LDMSD_LERROR, SAMP " Cannot build '%s' message\n", cmd);
+        msglog(LDMSD_LERROR, SAMP " Cannot build '%s' message\n",
+               squeries[cmdidx].cmd);
         rc = -1;
         goto out;
 
@@ -300,9 +307,188 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 
 }
 
+static int parse_feedback_message_for_setup_teardown(const char* msg, int msg_len,
+                                                     char** prdcrname_e)
+{
+        json_parser_t jp = NULL;
+        json_entity_t jdoc = NULL;
+        json_entity_t ent = NULL;
+        char *buff = NULL;
+        char *prdcrname = NULL;
+        int rc = 0;
 
-static int parse_feedback_message(const char* msg, int msg_len,
-                                  char** dynstream_e, char** prdcrname_e,
+        jp = json_parser_new(0);
+        if (!jp){
+                rc = errno;
+                msglog(LDMSD_LERROR, SAMP " read() error: %d\n", errno);
+                goto out;
+        }
+        buff = strdup(msg);
+        if (!buff){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+        rc = json_parse_buffer(jp, buff, msg_len, &jdoc);
+        if (rc) {
+                msglog(LDMSD_LERROR, SAMP " JSON parse failed: %d\n", rc);
+                goto out;
+        }
+
+        //prdcrname
+        ent = json_value_find(jdoc, PRDCRNAME_KEY);
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No " PRDCRNAME_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: " PRDCRNAME_KEY " must be a string\n");
+                goto out;
+        }
+        prdcrname = strdup(ent->value.str_->str);
+        if (!prdcrname){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+ out:
+
+        //caller has to free
+        *prdcrname_e = prdcrname;
+
+        if (buff) free(buff);
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+
+        msglog(LDMSD_LDEBUG,
+               SAMP " completed parse_feedback_message_for_setup_teardown"
+               " returning %d\n", rc);
+
+        return rc;
+
+}
+
+static int parse_feedback_message_for_query(const char* msg, int msg_len,
+                                            char** query_e, char** uuid_e,
+                                            char** argstring_e)
+{
+        json_parser_t jp = NULL;
+        json_entity_t jdoc = NULL;
+        json_entity_t ent = NULL;
+        char *buff = NULL;
+        char *query = NULL;
+        char *uuid = NULL;
+        char *argstring = NULL;
+        int rc = 0;
+
+
+        jp = json_parser_new(0);
+        if (!jp){
+                rc = errno;
+                msglog(LDMSD_LERROR, SAMP " read() error: %d\n", errno);
+                goto out;
+        }
+        buff = strdup(msg);
+        if (!buff){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+        rc = json_parse_buffer(jp, buff, msg_len, &jdoc);
+        if (rc) {
+                msglog(LDMSD_LERROR, SAMP " JSON parse failed: %d\n", rc);
+                goto out;
+        }
+
+        //TODO: See if there is an iterator where I can just pack up all
+        //the other fields, since they arent actually used
+        ent = json_value_find(jdoc, QUERY_KEY);
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No " QUERY_KEY " in message\n");
+                rc = -1;
+                goto argparse;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: " QUERY_KEY " must be a string\n");
+                goto argparse;
+        }
+        query = strdup(ent->value.str_->str);
+        if (!query){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+ argparse:
+        ent = json_value_find(jdoc, ARG_STR_KEY);
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No " ARG_STR_KEY " in message\n");
+                rc = -1;
+                goto uuidparse;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: " ARG_STR_KEY " must be a string\n");
+                goto uuidparse;
+        }
+        argstring = strdup(ent->value.str_->str);
+        if (!argstring){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+ uuidparse:
+        ent = json_value_find(jdoc, UUID_KEY);
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No " UUID_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: " UUID_KEY " must be a string\n");
+                goto out;
+        }
+        uuid = strdup(ent->value.str_->str);
+        if (!uuid){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+
+ out:
+        *query_e = query;
+        *argstring_e = argstring;
+        *uuid_e = uuid;
+
+        if (buff) free(buff);
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+
+        //ignoring bad return, since the args wont be looked at until the query
+        //return NULLs for bad fields
+        //caller has responsibility to free
+
+        msglog(LDMSD_LDEBUG,
+               SAMP " completed parse_feedback_message_for_query returning %d\n",
+               rc);
+
+        return rc;
+
+}
+
+static int parse_feedback_message_for_sendon(const char* msg, int msg_len,
+                                  char** dynstream_e,
                                   char** myhost_e, char** myport_e,
                                   char** myxprt_e, char** myauth_e,
                                   char** upstreamhost_e, char** upstreamport_e,
@@ -315,7 +501,6 @@ static int parse_feedback_message(const char* msg, int msg_len,
         char *temp = NULL;
 
         char *dynstream = NULL;
-        char *prdcrname = NULL;
 
         char *myhost = NULL;
         char *myport = NULL;
@@ -342,7 +527,7 @@ static int parse_feedback_message(const char* msg, int msg_len,
 
         int rc = 0;
 
-        // parse the data for SETUP_FEEDBACK OR TEARDOWN_FEEDBACK (same for bot)
+        // parse the common data commands (note that SETUP and TEARDOWN need the same)
         // parsing will catch if this is json
         // NOTE: that there are corner cases that will still slip through...
         jp = json_parser_new(0);
@@ -378,25 +563,6 @@ static int parse_feedback_message(const char* msg, int msg_len,
         }
         dynstream = strdup(ent->value.str_->str);
         if (!dynstream){
-                rc = ENOMEM;
-                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                goto bad;
-        }
-        //prdcrname
-        ent = json_value_find(jdoc, PRDCRNAME_KEY);
-        if (!ent){
-                msglog(LDMSD_LERROR, SAMP " No " PRDCRNAME_KEY " in message\n");
-                rc = -1;
-                goto bad_params;
-        }
-        if (ent->type != JSON_STRING_VALUE){
-                rc = EINVAL;
-                msglog(LDMSD_LERROR,
-                       SAMP " Error: " PRDCRNAME_KEY " must be a string\n");
-                goto bad_params;
-        }
-        prdcrname = strdup(ent->value.str_->str);
-        if (!prdcrname){
                 rc = ENOMEM;
                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                 goto bad;
@@ -528,7 +694,6 @@ static int parse_feedback_message(const char* msg, int msg_len,
  good_params:
 
         *dynstream_e = dynstream;
-        *prdcrname_e = prdcrname;
         *myhost_e = myhost;
         *myport_e = myport;
         *myxprt_e = myxprt;
@@ -567,7 +732,7 @@ static int parse_feedback_message(const char* msg, int msg_len,
         if (jdoc) json_entity_free(jdoc);
 
         msglog(LDMSD_LDEBUG,
-               SAMP " completed parse_feedback_message returning %d\n", rc);
+               SAMP " completed parse_feedback_message_for_sendon returning %d\n", rc);
 
         //it will be the callers responsibility to free the arguments
         return rc;
@@ -575,7 +740,7 @@ static int parse_feedback_message(const char* msg, int msg_len,
 }
 
 
-static int call_ldmsd_controller(const char* cmd, const char* dynstream,
+static int call_ldmsd_controller(int cmdidx, const char* dynstream,
                                  const char* prdcrname,
                                  const char* myhost, const char* myport,
                                  const char* myxprt, const char* myauth,
@@ -587,7 +752,8 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
         int rc = 0;
 
         //FIXME are there return values to system?
-        char teststring[BUFLEN];
+        char teststring[MAXBUF];
+
 
         if (!upstreamhost || !upstreamport){
                 msglog(LDMSD_LDEBUG, SAMP " No prdcr to add/remove"
@@ -596,10 +762,13 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
         }
 
         msglog(LDMSD_LINFO,
-               SAMP " Issuing commands to ldmsd_controller for '%s'\n", cmd);
+               SAMP " Issuing commands to ldmsd_controller for '%s'\n",
+               squeries[cmdidx].cmd);
 
-        if (!strcmp(cmd, SETUP_FEEDBACK)){
-                rc = snprintf(teststring, BUFLENm1,
+
+        switch (cmdidx){
+        case 0:
+                rc = snprintf(teststring, (MAXBUF-1),
                               "echo \"" PRDCR_ADD_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
                               upstreamhost, upstreamxprt, upstreamport,
@@ -609,7 +778,7 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                rc = snprintf(teststring, BUFLENm1,
+                rc = snprintf(teststring, (MAXBUF-1),
                               "echo \"" PRDCR_SUBSCRIBE_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
                               prdcrname, dynstream,
@@ -618,7 +787,7 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                rc = snprintf(teststring, BUFLENm1,
+                rc = snprintf(teststring, (MAXBUF-1),
                               "echo \"" PRDCR_START_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
                               prdcrname,
@@ -628,10 +797,10 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 system(teststring);
 
                 rc = 0;
-
-        } else if (!strcmp(cmd, TEARDOWN_FEEDBACK)){
+                break;
+        case 1:
                 //TODO: doublecheck order
-                rc = snprintf(teststring, BUFLENm1,
+                rc = snprintf(teststring, (MAXBUF-1),
                               "echo \"" PRDCR_UNSUBSCRIBE_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
                               prdcrname, dynstream,
@@ -640,7 +809,7 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 //FIXME: is there a time to wait?
                 system(teststring);
 
-                rc = snprintf(teststring, BUFLENm1,
+                rc = snprintf(teststring, (MAXBUF-1),
                               "echo \"" PRDCR_STOP_FMT "\" | "
                               LDMSD_CONTROLLER_FMT,
                               prdcrname,
@@ -652,33 +821,110 @@ static int call_ldmsd_controller(const char* cmd, const char* dynstream,
                 //TODO FIXME: This is still not working right.
                 if (1){
                         msglog(LDMSD_LCRITICAL, SAMP
-                               " Need to debug prdcr_del before it can be issued."
-                               " Not executing it\n");
+                               " Cannot issue prdcr_del within this path, due to locks."
+                               " Not executing it and looking into alternate methods.\n");
                 } else {
-                        msglog(LDMSD_LCRITICAL,
-                               SAMP " about to issue prdcr_del after sleep (time to check the controller via command line)\n.");
-                        sleep(120);
-                        rc = snprintf(teststring, BUFLENm1,
-                                      "echo \"" PRDCR_DEL_FMT "\" | "
-                                      LDMSD_CONTROLLER_FMT,
-                                      prdcrname,
-                                      myhost, myport, myxprt, myauth);
-                        msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n",
-                               teststring);
-                        //FIXME: is there a time to wait?
-                        system(teststring);
+
+                       FILE* mf;
+                       char lbuf[2048];
+                       char *s;
+
+                       msglog(LDMSD_LCRITICAL,
+                               SAMP " about to issue prdcr_del after sleep"
+                               " time to check the controller via command line)\n.");
+                       sleep(120);
+                       rc = snprintf(teststring, (MAXBUF-1),
+                                     "echo \"" PRDCR_DEL_FMT "\" | "
+                                     LDMSD_CONTROLLER_FMT,
+                                     prdcrname,
+                                     myhost, myport, myxprt, myauth);
+                       msglog(LDMSD_LDEBUG, SAMP " issuing '%s'\n",
+                              teststring);
+                       //FIXME: is there a time to wait?
+                       system(teststring);
+
+                       if (0) {
+                               mf = popen(teststring, "r");
+                               if (!mf){
+                                       msglog(LDMSD_LERROR,
+                                              SAMP ": Could not execute '%s'\n",
+                                              teststring);
+                                       rc = ENOENT;
+                                       goto out;
+                               }
+
+                               do {
+                                       s = fgets(lbuf, sizeof(lbuf), mf);
+                                       if (!s)
+                                               break;
+                                       msglog(LDMSD_LDEBUG,
+                                              SAMP ": Read '%s'\n", lbuf);
+                               } while (s);
+                               if (mf)  pclose(mf);
+                               mf = NULL;
+                       }
+
+                       msglog(LDMSD_LDEBUG,
+                              SAMP ": After issuing prdcr_del\n");
                 }
+
                 rc = 0;
-        } else {
-                msglog(LDMSD_LCRITICAL, SAMP " unknown cmd '%s'\n", cmd);
-                rc = -1;
+                break;
+        default:
+                //wont happen
+                break;
         }
+
+ out: //this is a placeholder, while testing pclose
 
         return rc;
 }
 
+static int end_of_the_line(int cmdidx, const char* upstreamhost,
+                           const char* upstreamport,
+                           const char* upstreamcmdstream,
+                           const char* sendon,
+                           const char* dynstream)
+{
 
-static int feedback_handler(const char* cmd, const char* msg, int msg_len)
+        if (upstreamhost || upstreamport || upstreamcmdstream || sendon){
+                //not end of the line
+                return 0;
+        }
+
+        //FIXME: TEMPORARY HACK
+        // 4)  the extreme end, send a test message back down.
+        // NOTE: you can also call ldmsd_stream_publish on the
+        // next to last L on the dynamic stream
+
+        switch (cmdidx){
+        case 0:
+        case 1:
+                if (TURNAROUND){
+                        msglog(LDMSD_LINFO, SAMP " End of the line. Sleeping 20 and"
+                               " Testing sending a message back down\n");
+                        system("sleep 20");
+                        turnaround("localhost", "52002",
+                                   DYN_DEFAULT_XPRT, DYN_DEFAULT_AUTH,
+                                   dynstream);
+                }
+                break;
+        case 2:
+                msglog(LDMSD_LINFO,
+                       SAMP " Should be querying the DB,"
+                       " but it is not written yet\n");
+                break;
+        default:
+                //won't happen
+                break;
+        }
+
+        return 1;
+
+
+}
+
+static int feedback_handler(int cmdidx, const char* msg, int msg_len)
 {
         int rc = 0;
         int holdrc = 0;
@@ -695,37 +941,65 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         char *upstreamauth = NULL;
         char *upstreamcmdstream = NULL;
         char *sendon = NULL;
+        char *query = NULL;
+        char *argstring = NULL;
+        char *uuid = NULL;
 
         ldmsd_stream_client_t client = NULL;
 
         // the host and port info will be used for ldmsd controller
-        rc = parse_feedback_message(msg, msg_len, &dynstream, &prdcrname,
+        //ACG: can resuse this for query if prdcrname is ok to be null
+        rc = parse_feedback_message_for_sendon(msg, msg_len, &dynstream,
                                     &myhost, &myport, &myxprt, &myauth,
                                     &upstreamhost, &upstreamport,
                                     &upstreamxprt, &upstreamauth,
                                     &upstreamcmdstream, &sendon);
         if (rc != 0){
                 msglog(LDMSD_LDEBUG, SAMP
-                       " Error parsing message. No further actions on %s\n",
-                       cmd);
+                       " Error parsing message for sendon. No further actions on '%s'n",
+                       squeries[cmdidx].cmd);
+
                 goto out;
         }
 
-        if (!upstreamhost || !upstreamport || !upstreamcmdstream || !sendon){
-                if (TURNAROUND){ //FIXME --- this is a temporary hack.
-                        // 4)  the extreme end, send a test message back down.
-                        // NOTE: you can also call ldmsd_stream_publish on the
-                        // next to last L on the dynamic stream
-                        system("sleep 20");
-                        msglog(LDMSD_LINFO, SAMP " End of the line."
-                               " Testing sending a message back down\n");
-                        turnaround("localhost", "52002",
-                                   DYN_DEFAULT_XPRT, DYN_DEFAULT_AUTH,
-                                   dynstream);
-                } else {
-                        msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon. "
-                               " No further actions on SETUP_FEEDBACK");
+        switch (cmdidx){
+        case 0:
+        case 1:
+                rc = parse_feedback_message_for_setup_teardown(msg, msg_len,
+                                                               &prdcrname);
+                if (rc != 0){
+                        msglog(LDMSD_LDEBUG, SAMP
+                               " Error parsing message for setup_teardown."
+                               " No further actions on '%s'\n",
+                               squeries[cmdidx].cmd);
+                        goto out;
+
                 }
+                break;
+        case 2:
+                rc = parse_feedback_message_for_query(msg, msg_len, &query,
+                                                      &uuid, &argstring);
+                if (rc != 0){
+                        msglog(LDMSD_LDEBUG, SAMP
+                               " Error parsing message for query."
+                               " No further actions on '%s'\n",
+                               squeries[cmdidx].cmd);
+                        goto out;
+                }
+                break;
+        default:
+                //wont happen
+                break;
+        }
+
+        rc = end_of_the_line(cmdidx, upstreamhost, upstreamport,
+                             upstreamcmdstream, sendon,
+                             dynstream);
+        if (rc){
+                msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon. "
+                       " This may be ok. No further actions on '%s'",
+                       squeries[cmdidx].cmd);
+                rc = 0; //because this is actually ok
                 goto out;
         }
 
@@ -733,69 +1007,87 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
                SAMP " myhost = '%s' myport = '%s'"
                " myxprt = '%s' myauth = '%s'"
                " dynstream = '%s'"
-               " prdcrname = '%s'"
                " upstream host = '%s' upstream port = '%s'"
                " upstream xprt = '%s' upstream auth = '%s'"
-               " upstreamcmd = '%s'"
+               " upstreampcmd = '%s'"
                " sendon list = '%s'\n",
                myhost, myport, myxprt, myauth,
-               dynstream, prdcrname,
+               dynstream,
                upstreamhost, upstreamport,
                upstreamxprt, upstreamauth,
                upstreamcmdstream, sendon);
 
-        // 1) use ldmsd_controller to tell this daemon on myhost myport
-        // to subscribe to stream dynstream from upstreamhost.
-        // OR if teardown, to tear down
-        rc = call_ldmsd_controller(cmd, dynstream, prdcrname,
-                                   myhost, myport, myxprt, myauth,
-                                   upstreamhost, upstreamport, upstreamxprt);
-        if (rc != 0){
-                // TODO will not setup a feedback for this, if I cannot call
-                // ldmsd_controller to listen to the dynamic stream
-                // but will still try to pass the message on to the next one
-                // -- does this make sense?
-                msglog(LDMSD_LERROR, SAMP " Error calling ldmsd controller."
-                       " No cleanup yet. Will still try to propogate\n");
-                holdrc = rc;
-                goto prop;
-        }
 
-        // 2) As a test, set up a callback for when receive a message
-        // on the dynamic stream.
-        // FIXME TODO This may end up being removed at some point
-        // NOTE: the last ldmsd doesn't subscribe nor does he have a callback,
-        // BUT someone can send to him and he will pass it on -
-        // is this what should happen? TODO CHECK
-        if (!strcmp(cmd, SETUP_FEEDBACK)){
-                msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n",
-                       dynstream);
-                client = ldmsd_stream_subscribe(dynstream,
-                                                dynamic_stream_recv_cb,
-                                                myself);
-                if (!client){
-                        msglog(LDMSD_LERROR,
-                               SAMP " cannot subscribe to stream '%s'"
-                               " (might be duplicate, so continuing)\n",
+        switch (cmdidx){
+        case 0:
+        case 1:
+                // 1) use ldmsd_controller to tell this daemon on myhost myport
+                // to subscribe to stream dynstream from upstreamhost.
+                // OR if teardown, to tear down
+                //ACG -- this will only be for SETUP and TEARDOWN
+
+                rc = call_ldmsd_controller(cmdidx, dynstream, prdcrname,
+                                           myhost, myport, myxprt, myauth,
+                                           upstreamhost, upstreamport,
+                                           upstreamxprt);
+                if (rc != 0){
+                        // TODO will not setup a feedback for this, if I cannot call
+                        // ldmsd_controller to listen to the dynamic stream
+                        // but will still try to pass the message on to the next one
+                        // -- does this make sense?
+                        msglog(LDMSD_LERROR, SAMP " Error calling ldmsd controller."
+                               " No cleanup yet. Will still try to propogate\n");
+                        holdrc = rc;
+                        goto prop;
+                }
+
+                // 2) As a test, set up a callback for when receive a message
+                // on the dynamic stream.
+                // FIXME TODO This may end up being removed at some point
+                // NOTE: the last ldmsd doesn't subscribe nor does he have a callback,
+                // BUT someone can send to him and he will pass it on -
+                // is this what should happen? TODO CHECK
+                if (cmdidx == 0){
+                        msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n",
                                dynstream);
+                        client = ldmsd_stream_subscribe(dynstream,
+                                                        dynamic_stream_recv_cb,
+                                                        myself);
+                        if (!client){
+                                msglog(LDMSD_LERROR,
+                                       SAMP " cannot subscribe to stream '%s'"
+                                       " (might be duplicate, so continuing)\n",
+                                       dynstream);
+                        } else {
+                                msglog(LDMSD_LINFO,
+                                       SAMP " subscribed to stream '%s')\n",
+                                       dynstream);
+                        }
                 } else {
-                        msglog(LDMSD_LINFO,
-                               SAMP " subscribed to stream '%s')\n",
+                        msglog(LDMSD_LCRITICAL, SAMP
+                               " will be closing stream '%s' BUT"
+                               " its not written yet\n",
                                dynstream);
                 }
-        } else if (!strcmp(cmd, TEARDOWN_FEEDBACK)){
-                msglog(LDMSD_LCRITICAL, SAMP
-                       " will be closing stream '%s' BUT its not written yet\n",
-                       dynstream);
+
+                break;
+        default:
+                //do nothing
+                break;
         }
+
+
+
  prop:
 
         // 3) have stripped off my daemon and send the message to upstream
         // so that it can do the same up the stream
-        rc = propogate_feedback(cmd, upstreamhost, upstreamport,
+        // ACG -- this will need to be for all, but the message will have
+        //different params for FEEDBACK as opposed to QUERY
+        rc = propogate_feedback(cmdidx, upstreamhost, upstreamport,
                                 upstreamxprt, upstreamauth,
                                 upstreamcmdstream, dynstream,
-                                prdcrname, sendon);
+                                prdcrname, sendon, query, uuid, argstring);
         if (rc)
                 msglog(LDMSD_LERROR, SAMP
                        " cannot propogate feedback w/Error case \n");
@@ -824,9 +1116,12 @@ static int feedback_handler(const char* cmd, const char* msg, int msg_len)
         if (upstreamauth) free(upstreamauth);
         if (upstreamcmdstream) free(upstreamcmdstream);
         if (sendon) free(sendon);
+        if (query) free(query);
+        if (argstring) free(argstring);
+        if (uuid) free(uuid);
 
         msglog(LDMSD_LDEBUG,
-               SAMP " completed setup_feedback returning %d\n", rc);
+               SAMP " completed feedback_handler returning %d\n", rc);
 
         return rc;
 }
@@ -838,15 +1133,17 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 			 const char *msg, size_t msg_len,
 			 json_entity_t entity)
 {
-	int rc = 0;
-        int len;
-        char *dynstream = NULL;
+
         char *cmd = NULL;
-        char *buff = NULL;
+        char * buff;
 	const char *type = "UNKNOWN";
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
+        int found;
+        int len;
+        int i;
+        int rc = 0;
 
 	switch (stream_type) {
 	case LDMSD_STREAM_JSON:
@@ -867,6 +1164,14 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 
                    There is a similar "TEARDOWN_FEEDBACK" which closes the
                    stream and calls the controller to unsubscribe.
+
+                   There is also a QUERY_DB which accepts messages in the form
+                   {"cmd"="QUERY_DB", "stream"="foo_fb",
+                     "list"="L1@52001:L2@52002@cmd2:L3@52003@cmd3...",
+                     "query"="QUERY_1", "argstr_key"="foo bar"
+                     this also passes things up the cmd channel, morphing the
+                     list as it goes, but only at the end does it call the
+                     dynamic client on the service....
                 */
                 msglog(LDMSD_LDEBUG,
                        "stream: '%s', stream_type: %s, msg: \"%s\","
@@ -892,55 +1197,60 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                         goto out;
                 }
                 ent = json_value_find(jdoc, CMD_KEY);
-                if (ent){
-                        if (ent->type != JSON_STRING_VALUE){
-                                rc = EINVAL;
-                                msglog(LDMSD_LERROR, SAMP " Error: "
-                                       CMD_KEY " must be a string\n");
-                                goto out;
-                        }
-                        cmd = strdup(ent->value.str_->str);
-                        if (!cmd){
-                                rc = ENOMEM;
-                                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
-                                goto out;
-                        }
-                        len = strlen(cmd);
-                        if (!len){
-                                msglog(LDMSD_LERROR,
-                                       SAMP " Error: invalid cmd '%s'\n", cmd);
-                                rc = -1;
-                                goto out;
-                        }
-                        //Get rid of trailing whitespace and newlines
-                        while (len &&
-                               (isspace(cmd[len-1]) || cmd[len-1] == '\n')) {
-                                len--;
-                        }
-
-                        if (!len){
-                                msglog(LDMSD_LERROR,
-                                       SAMP " Error: empty cmd!\n");
-                                rc = -1;
-                                goto out;
-                        }
-                        cmd[len] = '\0';
-
-                        if (!strcmp(cmd, SETUP_FEEDBACK) ||
-                            !strcmp(cmd, TEARDOWN_FEEDBACK)){
-                                rc = feedback_handler(cmd, msg, msg_len);
-                                if (rc != 0)
-                                        msglog(LDMSD_LERROR, SAMP
-                                               " '%s' error=%d\n", cmd, rc);
-                        } else {
-                                msglog(LDMSD_LERROR,
-                                       SAMP " Error: invalid cmd '%s'\n", cmd);
-                                rc = -1;
-                                goto out;
-                        }
-                } else {
+                if (!ent){
                         msglog(LDMSD_LERROR,
                                SAMP "Error: missing cmd in msg '%s'\n", buff);
+                        rc = -1;
+                        goto out;
+                }
+                if (ent->type != JSON_STRING_VALUE){
+                        rc = EINVAL;
+                        msglog(LDMSD_LERROR, SAMP " Error: "
+                               CMD_KEY " must be a string\n");
+                        goto out;
+                }
+                cmd = strdup(ent->value.str_->str);
+                if (!cmd){
+                        rc = ENOMEM;
+                        msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                        goto out;
+                }
+                len = strlen(cmd);
+                if (!len){
+                        msglog(LDMSD_LERROR,
+                               SAMP " Error: invalid cmd '%s'\n", cmd);
+                        rc = -1;
+                        goto out;
+                }
+                //Get rid of trailing whitespace and newlines
+                while (len &&
+                       (isspace(cmd[len-1]) || cmd[len-1] == '\n')) {
+                        len--;
+                }
+
+                if (!len){
+                        msglog(LDMSD_LERROR,
+                               SAMP " Error: empty cmd!\n");
+                        rc = -1;
+                        goto out;
+                }
+                cmd[len] = '\0';
+
+                found = 0;
+                for (i = 0; i < NUM_SQUERIES; i++){
+                        if (!strcmp(cmd, squeries[i].cmd)){
+                                found = 1;
+                                rc = feedback_handler(i, msg, msg_len);
+                                if (rc != 0)
+                                        msglog(LDMSD_LERROR, SAMP
+                                               " '%s' error=%d\n",
+                                               squeries[i].cmd, rc);
+                                break;
+                        }
+                }
+                if (!found){
+                        msglog(LDMSD_LERROR,
+                               SAMP " Error: invalid cmd '%s'\n", cmd);
                         rc = -1;
                         goto out;
                 }
@@ -966,7 +1276,6 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
  out:
         if (jp) json_parser_free(jp);
         if (jdoc) json_entity_free(jdoc);
-        if (dynstream) free(dynstream);
         if (buff) free(buff);
 
         msglog(LDMSD_LDEBUG, SAMP " completed cmd_recv_cb returning %d\n", rc);

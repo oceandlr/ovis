@@ -46,33 +46,57 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#ifndef __DYNAMIC_QUERY_H_
-#define __DYNAMIC_QUERY_H_
+#ifndef __DYNAMIC_QUERY_DEFS_H_
+#define __DYNAMIC_QUERY_DEFS_H_
 
-#include "dynamic_query_defs.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <ctype.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <stdarg.h>
-#include <sys/time.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <semaphore.h>
-#include <pthread.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <assert.h>
-#include <signal.h>
+#define MAXBUF 2048
+// commands to the sampler
+#define SETUP_FEEDBACK "SETUP_FEEDBACK"
+#define TEARDOWN_FEEDBACK "TEARDOWN_FEEDBACK"
+#define QUERY_DB "QUERY_DB"
+// fields in/about a command
+#define CMD_STREAM_BASE "cmd_stream"
+#define CMD_KEY "cmd"
+#define PRDCRNAME_KEY "prdcrname"
+#define LIST_KEY "list"
+#define DYNSTREAM_KEY "stream"
+// headers in a DB query
+#define QUERY_KEY "query_key"
+#define RESPONSE_KEY "response_key"
+#define UUID_KEY "uuid_key"
+#define ARG_STR_KEY "argstr_key"
 
-#define AUTH_OPT_MAX 128
-#define DYNAMIC_SERVICE_PORT 53000
-#define DYNAMIC_SERVICE_LISTEN_BACKLOG 128
+// query options --- note that the sampler doesnt use/check any of the query info
+#define NUM_SQUERIES 3
+#define NUM_QUERIES 3
+
+struct Sampler_Query {
+        char cmd[48];
+        int stream;
+        int prdcrname;
+        int list;
+        int query;
+        int args;
+        int uuid;
+};
+
+struct Sampler_Query squeries[3] = {{ SETUP_FEEDBACK, 1, 1, 1, 0, 0, 0},
+                                    {TEARDOWN_FEEDBACK, 1, 1, 1, 0, 0, 0},
+                                    {QUERY_DB, 1, 0, 1, 1, 2, 1}
+};
+
+
+
+struct Db_Query {
+	char qkey[48];
+	char qstring[100];
+	int nargs; //currently unused
+};
+
+struct Db_Query queries[3] = {{ "QUERY_1", "/home/gentile/Work/Build/streams/fakedbcall.sh", 2},
+                              { "QUERY_2", "echo \"hello\"", 0},
+                              { "QUERY_3", "echo \"junk\"", 0}
+};
 
 
 #endif

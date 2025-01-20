@@ -105,29 +105,54 @@ void signal_handler(int signum){
 }
 
 
-jbuf_t execResultsQuery(int qu, char *uuid){
+jbuf_t execResultsQuery(int qu, char* uuid, char *argstring){
 
         int rc = 0;
-        int len;
-        jbuf_t jb;
-        char* s = "This is the result";
+        int len = 0;
+        jbuf_t jb = NULL;
+        FILE *mf = NULL;
+        char cmdbuf[MAXBUF];
+        char lbuf[MAXBUF];
+        char* s = NULL;
 
         // this will execute a query on the database (in another thread?)
-        printf("in exec: Should be doing query %d '%s'\n",
-               qu, queries[qu].qstring);
-
-        // will need to know how to match up queries to generate
-        // values and queries to get their results
         // should this be a callback on the result being obtained?
-        if (0){
-        len = strlen(s);
-        //Get rid of trailing whitespace and newlines
+
+        len = snprintf(cmdbuf, sizeof(cmdbuf),"%s%s%s",
+                       queries[qu].qstring,
+                       (argstring == NULL? "" : " "),
+                       (argstring == NULL? "" : argstring));
+        printf("in exec: Should be doing query %d '%s'\n",
+               qu, cmdbuf);
+
+        mf = popen(cmdbuf, "r");
+        if (!mf){
+                printf("in exec: popen file ptr == NULL\n");
+                rc = ENOENT;
+                goto out;
+        }
+
+        //for now, single line return only
+        s = fgets(lbuf, sizeof(lbuf), mf);
+        if (!s){
+                printf("in exec: error reading output of popen\n");
+                rc = ENOENT;
+                goto out;
+        }
+        //TODO/FIXME: check output of fgets
+         //Get rid of trailing whitespace and newlines
+        len = strlen(lbuf);
         while (len &&
-               (isspace(s[len-1]) || s[len-1] == '\n')) {
+               (isspace(lbuf[len-1]) || lbuf[len-1] == '\n')) {
                 len--;
         }
-        s[len] = '\0';
+
+        if (!len){
+                printf("in exec: Empty return!\n");
+                rc = -1;
+                goto out;
         }
+        lbuf[len] = '\0';
 
         printf("Building the jbuf\n");
 
@@ -135,7 +160,7 @@ jbuf_t execResultsQuery(int qu, char *uuid){
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out;
-        jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\",", s);
+        jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\",", lbuf);
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\"", uuid);
         if (!jb) goto out;
@@ -146,24 +171,29 @@ jbuf_t execResultsQuery(int qu, char *uuid){
                 printf("Warning --- jb is null\n");
         }
 
+        printf("Will be sending jbuf '%s'\n", jb->buf);
  out:
+
+        if (mf) pclose(mf);
+        mf = NULL;
 
         return jb;
 
 }
 
-int parseJSONQuery(char* msg_buf, int* qu, char**uuid){
-        //expects to get a message in json format {QUERY_KEY:foo, UUID_KEY:bar}
+int parseJSONQuery(char* msg_buf, int* qu, char**uuid, char**argstring){
+        //expects to get a message in json format
+        //{QUERY_KEY:"foo", UUID_KEY:"bar", ARGS_STR_KEY "a b c"}
 
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
 
         char* luuid = NULL;
+        char* largstr = NULL;
         int lqu = -1;
         int k;
         int rc;
-
 
         printf("Should be parsing the jbuf\n");
 
@@ -225,10 +255,31 @@ int parseJSONQuery(char* msg_buf, int* qu, char**uuid){
                 goto out;
         }
 
+        //argstr
+        ent = json_value_find(jdoc, ARG_STR_KEY);
+        if (!ent){
+                printf(" No " ARG_STR_KEY " in message. Could be ok.\n");
+                rc = 0;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                printf(" Error: " ARG_STR_KEY " must be a string\n");
+                goto out;
+        }
+
+        largstr = strdup(ent->value.str_->str);
+        if (!largstr){
+                rc = ENOMEM;
+                printf(" Out of memory\n");
+                goto out;
+        }
+
  out:
         if (jp) json_parser_free(jp);
         if (jdoc) json_entity_free(jdoc);
 
+        *argstring = largstr;
         *uuid = luuid;
         *qu = lqu;
 
@@ -315,8 +366,9 @@ int parseArgs(int argc, char **argv){
 
 
 int setupLDMSD(){
+        //have to do this in the thread
 
-	int rc;
+	int rc = 0;
 
         ldms = ldms_xprt_new_with_auth(xprt, NULL, auth, NULL);
         if (!ldms) {
@@ -336,10 +388,11 @@ int setupLDMSD(){
 
 void handleMsg(int CFD){
 
-        char recvBuff[MAX_MBUF];
+        char recvBuff[MAXBUF];
         int numrcv;
         jbuf_t jb;
         char* uuid = NULL;
+        char* args = NULL;
         int qu;
 	int rc;
 
@@ -349,26 +402,30 @@ void handleMsg(int CFD){
 	printf("Received %s\n", recvBuff);
 
 
-        rc = parseJSONQuery(recvBuff, &qu, &uuid);
+        rc = parseJSONQuery(recvBuff, &qu, &uuid, &args);
         if (rc){
 		printf("Warning: ignoring bad query\n");
                 if (uuid) free(uuid);
+                if (args) free(args);
 		return;
 	}
 
-        printf("Should be doing query %d '%s' uuid='%s'\n",
-               qu, queries[qu].qstring, uuid);
+        printf("Should be doing query %d '%s%s%s' uuid='%s'\n",
+               qu, queries[qu].qstring,
+               (args == NULL? "": " "),
+               (args == NULL? "": args),
+               uuid);
 
-        jb = execResultsQuery(qu, uuid);
+        jb = execResultsQuery(qu, uuid, args);
         if (jb == NULL){
-                printf("jb is null\n");
+                printf("jb is null. Not publishing\n");
                 goto out;
         }
 
         printf("Setting up ldmsd connection in the thread now\n");
         rc = setupLDMSD();
         if (rc != 0){
-                printf("Cannot setup LDMSD\n");
+                printf("Cannot setup LDMSD. Not publishing.\n");
                 goto out;
         }
 
@@ -393,6 +450,9 @@ void handleMsg(int CFD){
         if (uuid)
                 free(uuid);
         uuid = NULL;
+        if (args)
+                free(args);
+        args = NULL;
 
         printf("returning\n");
         return;
@@ -411,15 +471,6 @@ int main(int argc, char **argv){
         if (rc != 0){
                 printf("Bad args\n");
                 exit(-1);
-        }
-
-        if (0){
-                //try moving this into the thread and see if that changes things
-                rc = setupLDMSD();
-                if (rc != 0){
-                        printf("Cannot setup LDMSD\n");
-                        exit(-1);
-                }
         }
 
 	struct sockaddr_in stSockAddr;
@@ -461,7 +512,7 @@ int main(int argc, char **argv){
 		if (pid == 0){
 	                close(SocketFD);
                         handleMsg(ConnectFD);
-                        printf("After handleMsg and should be exiting\n");
+                        printf("After handleMsg and should be exiting thread\n");
                         exit(0);
                 } else {
                         close(ConnectFD);
