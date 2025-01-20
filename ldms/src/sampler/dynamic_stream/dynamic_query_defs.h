@@ -66,6 +66,8 @@
 #define UUID_KEY "uuid_key"
 #define ARG_STR_KEY "argstr_key"
 
+#define QUERYDB_CLIENT_EXE "/home/gentile/Work/Build/OVIS-4.4.4/sbin/dynamic_query_client"
+
 // query options --- note that the sampler doesnt use/check any of the query info
 #define NUM_SQUERIES 3
 #define NUM_QUERIES 3

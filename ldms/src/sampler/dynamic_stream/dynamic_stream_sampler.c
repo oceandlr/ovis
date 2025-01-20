@@ -77,6 +77,7 @@
 #define SAMP "dynamic_stream_sampler"
 #define DYN_DEFAULT_XPRT "sock"
 #define DYN_DEFAULT_AUTH "munge"
+
 #define LDMSD_CONTROLLER_FMT "ldmsd_controller -h %s -p %s -x %s -a %s"
 #define PRDCR_ADD_INTERVAL 20000000
 #define PRDCR_ADD_FMT "prdcr_add host=%s xprt=%s port=%s interval=%d type=active name=%s"
@@ -166,6 +167,7 @@ static int propogate_feedback(int cmdidx,
         jb = jbuf_append_str(jb, "}}"); if (!jb) goto out_1;
 
         //set up the connectionn
+        msglog(LDMSD_LDEBUG, SAMP " setting up the connection to be able to publish\n");
         ldms = ldms_xprt_new_with_auth(xprt, NULL, auth, NULL);
         if (!ldms) {
                 rc = errno;
@@ -183,6 +185,7 @@ static int propogate_feedback(int cmdidx,
         // if QUERY_FEEDBACK, tell dest on cmd the message
         // if TEARDOWN_FEEDBACK, tell dest on cmd to teardown the new stream
         // info.
+        msglog(LDMSD_LDEBUG, SAMP " about to publish\n");
         rc = ldmsd_stream_publish(ldms, upstreamcmdstream, LDMSD_STREAM_JSON,
                                   jb->buf, jb->cursor+1);
         if (rc){
@@ -203,7 +206,13 @@ static int propogate_feedback(int cmdidx,
         goto out;
 
  out:
-        if (jb) jbuf_free(jb);
+
+        if (ldms)
+                ldms_xprt_close(ldms);
+        ldms = NULL;
+        if (jb)
+                jbuf_free(jb);
+        jb = NULL;
 
         return rc;
 }
@@ -264,8 +273,13 @@ static int turnaround(char* dest, const char* port,
         goto out;
 
  out:
-        //TODO: do I need to close any ldms thing here
-        if (jb) jbuf_free(jb);
+        if (ldms)
+                ldms_xprt_close(ldms);
+        ldms = NULL;
+        if (jb)
+                jbuf_free(jb);
+        jb = NULL;
+
         return rc;
 
 }
@@ -884,8 +898,14 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
                            const char* upstreamport,
                            const char* upstreamcmdstream,
                            const char* sendon,
-                           const char* dynstream)
+                           const char* dynstream,
+                           const char* query,
+                           const char* uuid,
+                           const char* argstring)
 {
+
+        char lbuf[MAXBUF];
+        int rc;
 
         if (upstreamhost || upstreamport || upstreamcmdstream || sendon){
                 //not end of the line
@@ -902,7 +922,7 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
         case 1:
                 if (TURNAROUND){
                         msglog(LDMSD_LINFO, SAMP " End of the line. Sleeping 20 and"
-                               " Testing sending a message back down\n");
+                               " Testing sending a message basend_of_theck down\n");
                         system("sleep 20");
                         turnaround("localhost", "52002",
                                    DYN_DEFAULT_XPRT, DYN_DEFAULT_AUTH,
@@ -910,9 +930,24 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
                 }
                 break;
         case 2:
-                msglog(LDMSD_LINFO,
-                       SAMP " Should be querying the DB,"
-                       " but it is not written yet\n");
+                // call dynamic_query_client for now....
+                // ./dynamic_query_client QUERY_1 foo "a b c"
+
+                if (argstring){
+                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s \"%s\"",
+                                      QUERYDB_CLIENT_EXE,
+                                      query, uuid, argstring);
+                } else {
+                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s",
+                                      QUERYDB_CLIENT_EXE,
+                                      query, uuid);
+                }
+                msglog(LDMSD_LINFO, SAMP " End of the line."
+                       " Calling '%s'. Not parsing return.\n", lbuf);
+                system(lbuf);
+                msglog(LDMSD_LINFO, SAMP " After calling '%s'.\n", lbuf);
+                rc = 0;
+
                 break;
         default:
                 //won't happen
@@ -992,9 +1027,10 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                 break;
         }
 
+ endoftheline:
         rc = end_of_the_line(cmdidx, upstreamhost, upstreamport,
                              upstreamcmdstream, sendon,
-                             dynstream);
+                             dynstream, query, uuid, argstring);
         if (rc){
                 msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon. "
                        " This may be ok. No further actions on '%s'",
@@ -1018,6 +1054,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                upstreamcmdstream, sendon);
 
 
+ controller:
         switch (cmdidx){
         case 0:
         case 1:
@@ -1075,7 +1112,6 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                 //do nothing
                 break;
         }
-
 
 
  prop:
