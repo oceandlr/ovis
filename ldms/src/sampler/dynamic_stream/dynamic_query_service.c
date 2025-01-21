@@ -57,7 +57,6 @@ static char *host = NULL;
 static char *port = NULL;
 static char *xprt = "sock";
 static char *auth = "none";
-static char *stream = NULL;
 static const int auth_opt_max = AUTH_OPT_MAX;
 static ldmsd_stream_type_t typ = LDMSD_STREAM_JSON;
 static ldms_t ldms = NULL;
@@ -68,7 +67,6 @@ static int ConnectFD = -1;
 static struct option long_opts[] = {
 	{"host",     required_argument, 0,  'h' },
 	{"port",     required_argument, 0,  'p' },
-	{"stream",   required_argument, 0,  's' },
 	{"xprt",     required_argument, 0,  'x' },
 	{"auth",     required_argument, 0,  'a' },
 	{"auth_arg", required_argument, 0,  'A' },
@@ -78,7 +76,6 @@ static struct option long_opts[] = {
 void usage(int argc, char **argv) __attribute__((noreturn));
 void usage(int argc, char **argv){
 	printf("usage: %s -x <xprt> -h <host> -p <port> "
-	       "-s <stream-name> "
 	       "-a <auth> -A <auth-opt> \n",
 	       argv[0]);
 	exit(1);
@@ -105,7 +102,9 @@ void signal_handler(int signum){
 }
 
 
-jbuf_t execResultsQuery(int qu, char* uuid, char *argstring){
+jbuf_t execResultsQuery(int qu, const char* uuid,
+                        const char* responder, const char* dynstream,
+                        const char *argstring){
 
         int rc = 0;
         int len = 0;
@@ -162,7 +161,11 @@ jbuf_t execResultsQuery(int qu, char* uuid, char *argstring){
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\",", lbuf);
         if (!jb) goto out;
-        jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\"", uuid);
+        jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\",", uuid);
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, RESPONDER_KEY, "\"%s\",", responder);
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, RESPONSE_STREAM_KEY, "\"%s\"", dynstream);
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "}}");
         if (!jb) goto out;
@@ -181,7 +184,9 @@ jbuf_t execResultsQuery(int qu, char* uuid, char *argstring){
 
 }
 
-int parseJSONQuery(char* msg_buf, int* qu, char**uuid, char**argstring){
+int parseJSONQuery(char* msg_buf, int* qu, char** uuid,
+                   char** responder, char** dynstream,
+                   char** argstring){
         //expects to get a message in json format
         //{QUERY_KEY:"foo", UUID_KEY:"bar", ARGS_STR_KEY "a b c"}
 
@@ -190,6 +195,8 @@ int parseJSONQuery(char* msg_buf, int* qu, char**uuid, char**argstring){
         json_entity_t ent = NULL;
 
         char* luuid = NULL;
+        char* lresponder = NULL;
+        char* ldynstream = NULL;
         char* largstr = NULL;
         int lqu = -1;
         int k;
@@ -255,6 +262,46 @@ int parseJSONQuery(char* msg_buf, int* qu, char**uuid, char**argstring){
                 goto out;
         }
 
+        //responder
+        ent = json_value_find(jdoc, RESPONDER_KEY);
+        if (!ent){
+                printf(" No " RESPONDER_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                printf(" Error: " RESPONDER_KEY " must be a string\n");
+                goto out;
+        }
+
+        lresponder = strdup(ent->value.str_->str);
+        if (!lresponder){
+                rc = ENOMEM;
+                printf(" Out of memory\n");
+                goto out;
+        }
+
+        //stream
+        ent = json_value_find(jdoc, RESPONSE_STREAM_KEY);
+        if (!ent){
+                printf(" No " RESPONSE_STREAM_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                printf(" Error: " RESPONSE_STREAM_KEY " must be a string\n");
+                goto out;
+        }
+
+        ldynstream = strdup(ent->value.str_->str);
+        if (!ldynstream){
+                rc = ENOMEM;
+                printf(" Out of memory\n");
+                goto out;
+        }
+
         //argstr
         ent = json_value_find(jdoc, ARG_STR_KEY);
         if (!ent){
@@ -281,6 +328,8 @@ int parseJSONQuery(char* msg_buf, int* qu, char**uuid, char**argstring){
 
         *argstring = largstr;
         *uuid = luuid;
+        *responder = lresponder;
+        *dynstream = ldynstream;
         *qu = lqu;
 
         return rc;
@@ -347,18 +396,11 @@ int parseArgs(int argc, char **argv){
 			auth_opt->list[auth_opt->count].value = rval;
 			auth_opt->count++;
 			break;
-		case 's':
-			stream = strdup(optarg);
-			if (!stream) {
-				printf("ERROR: out of memory\n");
-				exit(1);
-			}
-			break;
 		default:
 			usage(argc, argv);
 		}
 	}
-	if (!host || !port || !stream )
+	if (!host || !port )
 		usage(argc, argv);
 
         return 0;
@@ -392,6 +434,8 @@ void handleMsg(int CFD){
         int numrcv;
         jbuf_t jb;
         char* uuid = NULL;
+        char* responder = NULL;
+        char* dynstream = NULL;
         char* args = NULL;
         int qu;
 	int rc;
@@ -402,7 +446,8 @@ void handleMsg(int CFD){
 	printf("Received %s\n", recvBuff);
 
 
-        rc = parseJSONQuery(recvBuff, &qu, &uuid, &args);
+        rc = parseJSONQuery(recvBuff, &qu, &uuid,
+                            &responder, &dynstream, &args);
         if (rc){
 		printf("Warning: ignoring bad query\n");
                 if (uuid) free(uuid);
@@ -416,7 +461,7 @@ void handleMsg(int CFD){
                (args == NULL? "": args),
                uuid);
 
-        jb = execResultsQuery(qu, uuid, args);
+        jb = execResultsQuery(qu, uuid, responder, dynstream, args);
         if (jb == NULL){
                 printf("jb is null. Not publishing\n");
                 goto out;
@@ -432,7 +477,7 @@ void handleMsg(int CFD){
         //NOTE: had to move the connection to the thread for this not
         //to block. Can do iterations in the thread and it will work ok.
         printf("Publishing now\n");
-        rc = ldmsd_stream_publish(ldms, stream, typ,
+        rc = ldmsd_stream_publish(ldms, dynstream, typ,
                                   jb->buf, jb->cursor+1);
         printf("After publishing\n");
         if (rc) {
@@ -450,6 +495,12 @@ void handleMsg(int CFD){
         if (uuid)
                 free(uuid);
         uuid = NULL;
+        if (responder)
+                free(responder);
+        responder = NULL;
+        if (dynstream)
+                free(dynstream);
+        dynstream = NULL;
         if (args)
                 free(args);
         args = NULL;

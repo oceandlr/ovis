@@ -59,10 +59,13 @@
 #define CMD_KEY "cmd"
 #define PRDCRNAME_KEY "prdcrname"
 #define LIST_KEY "list"
-#define DYNSTREAM_KEY "stream"
+//combine these next two
+#define STREAM_KEY "stream"
 // headers in a DB query
 #define QUERY_KEY "query_key"
 #define RESPONSE_KEY "response_key"
+#define RESPONSE_STREAM_KEY "dynstream_key"
+#define RESPONDER_KEY "responder_key"
 #define UUID_KEY "uuid_key"
 #define ARG_STR_KEY "argstr_key"
 

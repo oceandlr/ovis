@@ -92,6 +92,7 @@ static struct ldmsd_plugin *myself;
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
 
+static int my_ldms_port = 0; //hack
 
 static const char *usage(struct ldmsd_plugin *self)
 {
@@ -120,6 +121,7 @@ static int propogate_feedback(int cmdidx,
                               const char* dyn_stream, const char* prdcrname,
                               const char* list,
                               const char* query, const char* uuid,
+                              const char* responder,
                               const char* argstring){
 
         jbuf_t jb;
@@ -144,7 +146,7 @@ static int propogate_feedback(int cmdidx,
         if (!jb) goto out_1;
         jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", squeries[cmdidx].cmd);
         if (!jb) goto out_1;
-        jb = jbuf_append_attr(jb, DYNSTREAM_KEY, "\"%s\",", dyn_stream);
+        jb = jbuf_append_attr(jb, STREAM_KEY, "\"%s\",", dyn_stream);
         if (!jb) goto out_1;
         if (prdcrname){
                 jb = jbuf_append_attr(jb, PRDCRNAME_KEY, "\"%s\",", prdcrname);
@@ -156,6 +158,10 @@ static int propogate_feedback(int cmdidx,
         }
         if (uuid){
                 jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\",", uuid);
+                if (!jb) goto out_1;
+        }
+        if (responder){
+                jb = jbuf_append_attr(jb, RESPONDER_KEY, "\"%s\",", responder);
                 if (!jb) goto out_1;
         }
         if (argstring){
@@ -249,7 +255,7 @@ static int turnaround(char* dest, const char* port,
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", "foo");
         if (!jb) goto out;
-        jb = jbuf_append_attr(jb, DYNSTREAM_KEY, "\"%s\",", "bar");
+        jb = jbuf_append_attr(jb, STREAM_KEY, "\"%s\",", "bar");
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, PRDCRNAME_KEY, "\"%s\",", "zed");
         if (!jb) goto out;
@@ -388,6 +394,7 @@ static int parse_feedback_message_for_setup_teardown(const char* msg, int msg_le
 
 static int parse_feedback_message_for_query(const char* msg, int msg_len,
                                             char** query_e, char** uuid_e,
+                                            char** responder_e,
                                             char** argstring_e)
 {
         json_parser_t jp = NULL;
@@ -396,6 +403,7 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         char *buff = NULL;
         char *query = NULL;
         char *uuid = NULL;
+        char *responder = NULL;
         char *argstring = NULL;
         int rc = 0;
 
@@ -418,7 +426,7 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
                 goto out;
         }
 
-        //TODO: See if there is an iterator where I can just pack up all
+        //TODO: See if there is nan iterator where I can just pack up all
         //the other fields, since they arent actually used
         ent = json_value_find(jdoc, QUERY_KEY);
         if (!ent){
@@ -444,16 +452,36 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         if (!ent){
                 msglog(LDMSD_LERROR, SAMP " No " ARG_STR_KEY " in message\n");
                 rc = -1;
-                goto uuidparse;
+                goto responderparse;
         }
         if (ent->type != JSON_STRING_VALUE){
                 rc = EINVAL;
                 msglog(LDMSD_LERROR,
                        SAMP " Error: " ARG_STR_KEY " must be a string\n");
-                goto uuidparse;
+                goto responderparse;
         }
         argstring = strdup(ent->value.str_->str);
         if (!argstring){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+ responderparse:
+        ent = json_value_find(jdoc, RESPONDER_KEY);
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No " RESPONDER_KEY " in message\n");
+                rc = -1;
+                goto uuidparse;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: " RESPONDER_KEY " must be a string\n");
+                goto uuidparse;
+        }
+        responder = strdup(ent->value.str_->str);
+        if (!responder){
                 rc = ENOMEM;
                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                 goto out;
@@ -484,6 +512,7 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         *query_e = query;
         *argstring_e = argstring;
         *uuid_e = uuid;
+        *responder_e = responder;
 
         if (buff) free(buff);
         if (jp) json_parser_free(jp);
@@ -563,16 +592,16 @@ static int parse_feedback_message_for_sendon(const char* msg, int msg_len,
         }
 
         // dynamic stream name
-        ent = json_value_find(jdoc, DYNSTREAM_KEY);
+        ent = json_value_find(jdoc, STREAM_KEY);
         if (!ent){
-                msglog(LDMSD_LERROR, SAMP " No " DYNSTREAM_KEY " in message\n");
+                msglog(LDMSD_LERROR, SAMP " No " STREAM_KEY " in message\n");
                 rc = -1;
                 goto bad_params;
         }
         if (ent->type != JSON_STRING_VALUE){
                 rc = EINVAL;
                 msglog(LDMSD_LERROR,
-                       SAMP " Error: " DYNSTREAM_KEY " must be a string\n");
+                       SAMP " Error: " STREAM_KEY " must be a string\n");
                 goto bad_params;
         }
         dynstream = strdup(ent->value.str_->str);
@@ -901,6 +930,7 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
                            const char* dynstream,
                            const char* query,
                            const char* uuid,
+                           const char* responder,
                            const char* argstring)
 {
 
@@ -931,16 +961,17 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
                 break;
         case 2:
                 // call dynamic_query_client for now....
-                // ./dynamic_query_client QUERY_1 foo "a b c"
+                // ./dynamic_query_client QUERY_1 foo 52001 dynamicbar "a b c"
 
                 if (argstring){
-                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s \"%s\"",
+                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s %s %s \"%s\"",
                                       QUERYDB_CLIENT_EXE,
-                                      query, uuid, argstring);
+                                      query, uuid, responder, dynstream,
+                                      argstring);
                 } else {
-                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s",
+                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s %s %s",
                                       QUERYDB_CLIENT_EXE,
-                                      query, uuid);
+                                      query, uuid, responder, dynstream);
                 }
                 msglog(LDMSD_LINFO, SAMP " End of the line."
                        " Calling '%s'. Not parsing return.\n", lbuf);
@@ -979,6 +1010,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         char *query = NULL;
         char *argstring = NULL;
         char *uuid = NULL;
+        char *responder = NULL;
 
         ldmsd_stream_client_t client = NULL;
 
@@ -1013,7 +1045,8 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                 break;
         case 2:
                 rc = parse_feedback_message_for_query(msg, msg_len, &query,
-                                                      &uuid, &argstring);
+                                                      &uuid, &responder,
+                                                      &argstring);
                 if (rc != 0){
                         msglog(LDMSD_LDEBUG, SAMP
                                " Error parsing message for query."
@@ -1030,7 +1063,8 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
  endoftheline:
         rc = end_of_the_line(cmdidx, upstreamhost, upstreamport,
                              upstreamcmdstream, sendon,
-                             dynstream, query, uuid, argstring);
+                             dynstream, query, uuid, responder,
+                             argstring);
         if (rc){
                 msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon. "
                        " This may be ok. No further actions on '%s'",
@@ -1053,6 +1087,10 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                upstreamxprt, upstreamauth,
                upstreamcmdstream, sendon);
 
+        //FIXME/TODO --- this is a hack
+        my_ldms_port = atoi(myport);
+        msglog(LDMSD_LINFO, SAMP "hack my_ldms_port = '%d'\n",
+               my_ldms_port);
 
  controller:
         switch (cmdidx){
@@ -1097,7 +1135,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                                        dynstream);
                         } else {
                                 msglog(LDMSD_LINFO,
-                                       SAMP " subscribed to stream '%s')\n",
+                                       SAMP " subscribed to stream '%s'\n",
                                        dynstream);
                         }
                 } else {
@@ -1123,7 +1161,8 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         rc = propogate_feedback(cmdidx, upstreamhost, upstreamport,
                                 upstreamxprt, upstreamauth,
                                 upstreamcmdstream, dynstream,
-                                prdcrname, sendon, query, uuid, argstring);
+                                prdcrname, sendon, query, uuid,
+                                responder, argstring);
         if (rc)
                 msglog(LDMSD_LERROR, SAMP
                        " cannot propogate feedback w/Error case \n");
@@ -1155,6 +1194,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         if (query) free(query);
         if (argstring) free(argstring);
         if (uuid) free(uuid);
+        if (responder) free(responder);
 
         msglog(LDMSD_LDEBUG,
                SAMP " completed feedback_handler returning %d\n", rc);

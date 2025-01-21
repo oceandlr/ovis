@@ -118,7 +118,9 @@ static int setupSocket(){
 }
 
 
-static int makeQuery(char* qu, char* uuid, char* argstring){
+static int makeQuery(const char* qu, const char* uuid,
+                     const char* responder, const char* dynstream,
+                     const char* argstring){
 
         jbuf_t jb;
         char sendBuff[MAXBUF];
@@ -134,7 +136,11 @@ static int makeQuery(char* qu, char* uuid, char* argstring){
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, QUERY_KEY, "\"%s\",", qu);
         if (!jb) goto out;
-        jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\"", uuid);
+        jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\",", uuid);
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, RESPONDER_KEY, "\"%s\",", responder);
+        if (!jb) goto out;
+        jb = jbuf_append_attr(jb, RESPONSE_STREAM_KEY, "\"%s\"", dynstream);
         if (!jb) goto out;
         if (argstring != NULL){
                 jb = jbuf_append_str(jb, ",");
@@ -171,8 +177,8 @@ int main(int argc, char **argv){
         signal(SIGINT, signal_handler);
         signal(SIGHUP, signal_handler);
 
-        if ((argc != 3) && (argc != 4)){
-                printf("Usage ./dynamic_query_client <QUERY_1> <UUID> (optional)<ARGSTRING>\n");
+        if ((argc != 5) && (argc != 6)){
+                printf("Usage ./dynamic_query_client <QUERY_1> <UUID> <RESPONDER> <DYNSTREAM> (optional)<ARGSTRING>\n");
                 exit (-1);
         }
 
@@ -182,7 +188,7 @@ int main(int argc, char **argv){
                 exit(-1);
         }
 
-        rc = makeQuery(argv[1], argv[2], (argc == 3? NULL: argv[3]));
+        rc = makeQuery(argv[1], argv[2], argv[3], argv[4], (argc == 6? NULL: argv[5]));
 
         return rc;
 }

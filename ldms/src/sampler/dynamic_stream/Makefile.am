@@ -36,4 +36,13 @@ dynamic_query_client_LDADD = $(COMMON_LIBADD) \
 			$(top_builddir)/lib/src/ovis_util/libovis_util.la
 dynamic_query_client_LDFLAGS = $(AM_LDFLAGS) -pthread
 
+
+sbin_PROGRAMS += dynamic_query_UI
+dynamic_query_UI_SOURCES = dynamic_query_UI.c dynamic_query.h dynamic_query_defs.h
+dynamic_query_UI_LDADD = $(COMMON_LIBADD) \
+			$(top_builddir)/lib/src/ovis_json/libovis_json.la \
+			$(top_builddir)/lib/src/ovis_util/libovis_util.la
+dynamic_query_UI_LDFLAGS = $(AM_LDFLAGS)
+
+
 endif
