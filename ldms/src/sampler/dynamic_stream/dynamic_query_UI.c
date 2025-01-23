@@ -53,7 +53,7 @@
 
 #define LDMS_PUBLISH_CMD "/home/gentile/Work/Build/OVIS-4.4.4/sbin/ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -h localhost "
 //output file to poll upon
-#define FILEBASE "/home/gentile/Work/Build/streams/uuid_"
+#define FILEBASE "/tmp/dynamicquery_uuid_"
 //ldms to which to publish and which one will write out
 #define MY_RESPONDER "52001"
 #define MY_STREAM "dynamicbar"
@@ -139,7 +139,6 @@ static int makeQuery(const char* uuid, const char* jsonfname,
         //quote for echo to work
         temp = strdup(jb->buf);
         newtemp = strdup(temp);
-        //        printf(" BEFORE '%s'\n", temp);
         i = 0;
         j = 0;
         while (temp[i] != '\0') {
@@ -152,23 +151,22 @@ static int makeQuery(const char* uuid, const char* jsonfname,
                 i++;
         }
         newtemp[j] = '\0';
-        //        printf(" AFTER '%s'\n", newtemp);
 
         snprintf(cmd, sizeof(cmd), "echo \"%s\" >> %s\n",
                 newtemp, jsonfname);
-        printf("building the json file executing '%s'\n", cmd);
+        //        printf("building the json file executing '%s'\n", cmd);
         system(cmd);
 
         snprintf(cmd, sizeof(cmd), "%s -f %s\n",
                  LDMS_PUBLISH_CMD, jsonfname);
-        printf("publishing calling '%s'\n", cmd);
+        //        printf("publishing calling '%s'\n", cmd);
         system(cmd);
 
 
  out:
 
         if (!jb){
-                printf("Can't build jbuf\n");
+                //                printf("Can't build jbuf\n");
                 rc = -1;
         } else {
                 rc = 0;
@@ -205,29 +203,30 @@ int main(int argc, char **argv){
 
         srand(time(NULL));
         r = rand();
-        snprintf(fbase, sizeof(fbase), "%s%d", FILEBASE, rand);
+        snprintf(fbase, sizeof(fbase), "%s%d", FILEBASE, r);
 
         snprintf(fname, sizeof(fname), "%s%s", fbase, ".out");
         snprintf(cmd, sizeof(cmd), "rm %s", fname);
         system(cmd);
         snprintf(cmd, sizeof(cmd), "touch %s", fname);
-        printf("Creating empty output file executing '%s'\n", cmd);
+        //        printf("Creating empty output file executing '%s'\n", cmd);
         system(cmd);
-        printf("File created '%s'\n", fname);
+        //        printf("File created '%s'\n", fname);
 
         snprintf(jsonfname, sizeof(jsonfname), "%s%s", fbase, "_json.out");
         snprintf(cmd, sizeof(cmd), "rm %s", jsonfname);
         system(cmd);
         snprintf(cmd, sizeof(cmd), "touch %s", jsonfname);
-        printf("Creating empty output file executing '%s'\n", cmd);
+        //        printf("Creating empty output file executing '%s'\n", cmd);
         system(cmd);
-        printf("File created '%s'\n", jsonfname);
+        //        printf("File created '%s'\n", jsonfname);
 
         rc = makeQuery(fname, jsonfname, argv[1], (argc == 3? argv[2]: NULL));
-        printf("After making query\n");
+        //        printf("After making query\n");
 
-        //TODO: poll on the file
-        printf("SHOULD BE POLLING ON AND RETURNING THE FILE CONTENTS HERE\n");
+        // For now, print fname to STDOUT
+        printf("UUID: %s\n", fname);
+
 
         //delete the file
         printf("not yet removing files '%s' and '%s'\n", fname, jsonfname);

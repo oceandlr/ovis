@@ -99,7 +99,7 @@ struct Db_Query {
 };
 
 struct Db_Query queries[3] = {{ "QUERY_1", "/home/gentile/Work/Build/streams/fakedbcall.sh", 2},
-                              { "QUERY_2", "echo \"hello\"", 0},
+                              { "QUERY_2", "/opt/ovis/lib/python3.6/site-packages/graf_analysis/balance_caas.py", 0},
                               { "QUERY_3", "echo \"junk\"", 0}
 };
 

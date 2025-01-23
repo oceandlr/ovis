@@ -152,6 +152,7 @@ jbuf_t execResultsQuery(int qu, const char* uuid,
                 goto out;
         }
         lbuf[len] = '\0';
+        printf("Return = '%s'\n", lbuf);
 
         printf("Building the jbuf\n");
 

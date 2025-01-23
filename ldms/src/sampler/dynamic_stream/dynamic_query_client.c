@@ -188,7 +188,7 @@ int main(int argc, char **argv){
                 exit(-1);
         }
 
-        rc = makeQuery(argv[1], argv[2], argv[3], argv[4], (argc == 6? NULL: argv[5]));
+        rc = makeQuery(argv[1], argv[2], argv[3], argv[4], (argc == 6? argv[5] : NULL));
 
         return rc;
 }

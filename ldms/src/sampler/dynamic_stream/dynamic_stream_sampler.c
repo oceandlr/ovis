@@ -92,7 +92,8 @@ static struct ldmsd_plugin *myself;
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
 
-static int my_ldms_port = 0; //hack
+//HACK
+static int my_ldms_port;
 
 static const char *usage(struct ldmsd_plugin *self)
 {
@@ -290,6 +291,171 @@ static int turnaround(char* dest, const char* port,
 
 }
 
+static int dynamic_message_handler(const char* stream,
+                                   const char* msg, size_t msg_len)
+{
+
+        //parse the message to see if I am the end client and, if so,
+        //then I have to write it out to the querier
+
+        json_parser_t jp = NULL;
+        json_entity_t jdoc = NULL;
+        json_entity_t ent = NULL;
+        char *buff = NULL;
+        char *lresponder = NULL;
+        char *luuid = NULL;
+        char *ldynstream = NULL;
+        char *lresp = NULL;
+        char cmd[1024];
+        int resp_int = 0;
+        int rc = 0;
+
+
+        jp = json_parser_new(0);
+        if (!jp){
+                rc = errno;
+                msglog(LDMSD_LERROR, SAMP " read() error: %d\n", errno);
+                goto out;
+        }
+        buff = strdup(msg);
+        if (!buff){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+        rc = json_parse_buffer(jp, buff, msg_len, &jdoc);
+        if (rc) {
+                msglog(LDMSD_LERROR, SAMP " JSON parse failed: %d\n", rc);
+                goto out;
+        }
+
+        //if I am the responder and this was received on the right stream, then print the response to the UUID
+
+        //responder
+        ent = json_value_find(jdoc, RESPONDER_KEY);
+        if (!ent){
+                msglog(LDMSD_LINFO, " No " RESPONDER_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, " Error: " RESPONDER_KEY " must be a string\n");
+                goto out;
+        }
+
+        lresponder = strdup(ent->value.str_->str);
+        if (!lresponder){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, " Out of memory\n");
+                goto out;
+        }
+
+         //uuid
+        ent = json_value_find(jdoc, UUID_KEY);
+        if (!ent){
+                msglog(LDMSD_LINFO, " No " UUID_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, " Error: " UUID_KEY " must be a string\n");
+                goto out;
+        }
+
+        luuid = strdup(ent->value.str_->str);
+        if (!luuid){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, " Out of memory\n");
+                goto out;
+        }
+
+        //stream
+        ent = json_value_find(jdoc, RESPONSE_STREAM_KEY);
+        if (!ent){
+                msglog(LDMSD_LINFO, " No " RESPONSE_STREAM_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, " Error: " RESPONSE_STREAM_KEY " must be a string\n");
+                goto out;
+        }
+
+        ldynstream = strdup(ent->value.str_->str);
+        if (!ldynstream){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, " Out of memory\n");
+                goto out;
+        }
+
+       //response
+        ent = json_value_find(jdoc, RESPONSE_KEY);
+        if (!ent){
+                msglog(LDMSD_LINFO, " No " RESPONSE_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, " Error: " RESPONSE_KEY " must be a string\n");
+                goto out;
+        }
+
+        lresp = strdup(ent->value.str_->str);
+        if (!lresp){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, " Out of memory\n");
+                goto out;
+        }
+
+        msglog(LDMSD_LINFO, " stream comp: '%s' '%s'\n", ldynstream, stream);
+        if (strcmp(ldynstream, stream)){
+                msglog(LDMSD_LINFO, "Not the right stream '%s' '%s'\n", ldynstream, stream);
+                goto out;
+        }
+
+        resp_int = atoi(lresponder);
+        if (resp_int != my_ldms_port){
+                msglog(LDMSD_LINFO, "Not the responder '%s' '%d'\n", lresponder, my_ldms_port);
+                goto out;
+        }
+
+        msglog(LDMSD_LINFO, " I am the responder and SHOULD BE PRINTING '%s' to '%s'\n",
+               lresp, luuid);
+
+        snprintf(cmd, sizeof(cmd), "echo \"%s\" >> %s\n",
+                 lresp, luuid);
+        system(cmd);
+
+        msglog(LDMSD_LINFO, " After printing to '%s'\n", luuid);
+
+
+ responder:
+
+                    ///FREE
+        if (buff) free(buff);
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+        rc = 0;
+
+        return rc;
+
+
+ out:
+
+                    ///FREE
+        msglog(LDMSD_LDEBUG, SAMP " I am not the responder\n");
+        if (buff) free(buff);
+        if (jp) json_parser_free(jp);
+        if (jdoc) json_entity_free(jdoc);
+        rc = 0;
+
+        return rc;
+}
+
 
 static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                                   ldmsd_stream_type_t stream_type,
@@ -308,7 +474,11 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                        " msg_len: %d, entity: %p\n",
                        ldmsd_stream_client_name(c), "JSON",
                        msg, msg_len, entity);
-                rc = 0;
+
+
+                rc = dynamic_message_handler(ldmsd_stream_client_name(c),
+                                             msg, msg_len);
+
                 goto out;
                 break;
 	case LDMSD_STREAM_STRING:
@@ -323,6 +493,8 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         }
 
  out:
+
+        msglog(LDMSD_LDEBUG, SAMP " completed dynamic_stream_recv_cb returning %d\n", rc);
         return rc;
 
 }
