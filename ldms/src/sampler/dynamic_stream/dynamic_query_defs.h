@@ -69,7 +69,7 @@
 #define UUID_KEY "uuid_key"
 #define ARG_STR_KEY "argstr_key"
 
-#define QUERYDB_CLIENT_EXE "/home/gentile/Work/Build/OVIS-4.4.4/sbin/dynamic_query_client"
+#define QUERYDB_CLIENT_EXE "/projects/ovis/caasfeedback/Build/OVIS-4.4.4/sbin/dynamic_query_client"
 
 // query options --- note that the sampler doesnt use/check any of the query info
 #define NUM_SQUERIES 3
@@ -98,8 +98,8 @@ struct Db_Query {
 	int nargs; //currently unused
 };
 
-struct Db_Query queries[3] = {{ "QUERY_1", "/home/gentile/Work/Build/streams/fakedbcall.sh", 2},
-                              { "QUERY_2", "/opt/ovis/lib/python3.6/site-packages/graf_analysis/balance_caas.py", 0},
+struct Db_Query queries[3] = {{ "QUERY_1", "/projects/ovis/caasfeedback/Build/streams/fakedbcall.sh", 2},
+                              { "QUERY_2", "python3.6 /opt/ovis/lib/python3.6/site-packages/graf_analysis/balance_caas.py", 0},
                               { "QUERY_3", "echo \"junk\"", 0}
 };
 

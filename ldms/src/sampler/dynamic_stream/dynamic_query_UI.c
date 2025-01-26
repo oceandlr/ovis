@@ -51,7 +51,7 @@
 #include <ovis_json/ovis_json.h>
 #include <ovis_util/util.h>
 
-#define LDMS_PUBLISH_CMD "/home/gentile/Work/Build/OVIS-4.4.4/sbin/ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -h localhost "
+#define LDMS_PUBLISH_CMD "/projects/ovis/caasfeedback/Build/OVIS-4.4.4/sbin/ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -h localhost "
 //output file to poll upon
 #define FILEBASE "/tmp/dynamicquery_uuid_"
 //ldms to which to publish and which one will write out
@@ -206,31 +206,19 @@ int main(int argc, char **argv){
         snprintf(fbase, sizeof(fbase), "%s%d", FILEBASE, r);
 
         snprintf(fname, sizeof(fname), "%s%s", fbase, ".out");
-        snprintf(cmd, sizeof(cmd), "rm %s", fname);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "touch %s", fname);
-        //        printf("Creating empty output file executing '%s'\n", cmd);
-        system(cmd);
-        //        printf("File created '%s'\n", fname);
 
         snprintf(jsonfname, sizeof(jsonfname), "%s%s", fbase, "_json.out");
-        snprintf(cmd, sizeof(cmd), "rm %s", jsonfname);
-        system(cmd);
         snprintf(cmd, sizeof(cmd), "touch %s", jsonfname);
-        //        printf("Creating empty output file executing '%s'\n", cmd);
         system(cmd);
-        //        printf("File created '%s'\n", jsonfname);
 
         rc = makeQuery(fname, jsonfname, argv[1], (argc == 3? argv[2]: NULL));
-        //        printf("After making query\n");
 
         // For now, print fname to STDOUT
-        printf("UUID: %s\n", fname);
+        printf("%s", fname);
 
 
         //delete the file
-        printf("not yet removing files '%s' and '%s'\n", fname, jsonfname);
-        //        snprintf(cmd, sizeof(cmd), "rm %s", jsonfname);
+
         //        system(cmd);
         //        snprintf(cmd, sizeof(cmd), "rm %s", fname);
         //        system(cmd);
