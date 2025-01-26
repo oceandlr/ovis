@@ -54,6 +54,7 @@
 #define SETUP_FEEDBACK "SETUP_FEEDBACK"
 #define TEARDOWN_FEEDBACK "TEARDOWN_FEEDBACK"
 #define QUERY_DB "QUERY_DB"
+#define QUERY_RESPONSE "QUERY_RESPONSE"
 // fields in/about a command
 #define CMD_STREAM_BASE "cmd_stream"
 #define CMD_KEY "cmd"
@@ -61,20 +62,30 @@
 #define LIST_KEY "list"
 //combine these next two
 #define STREAM_KEY "stream"
-// headers in a DB query
+// headers in a DB query or its response
 #define QUERY_KEY "query_key"
+//this is the actual response
 #define RESPONSE_KEY "response_key"
 #define RESPONSE_STREAM_KEY "dynstream_key"
 #define RESPONDER_KEY "responder_key"
+#define QUERIER_KEY "querier_key"
 #define UUID_KEY "uuid_key"
 #define ARG_STR_KEY "argstr_key"
 
 #define QUERYDB_CLIENT_EXE "/projects/ovis/caasfeedback/Build/OVIS-4.4.4/sbin/dynamic_query_client"
 
+//TEMP and well known
+//UI_ENTRY pt is also the responded
+#define UI_PUBLISH_TO_UUID "cmd_stream52001"
+#define UI_PUBLISH_UUID_ARGS "-p 52001 -h localhost -s cmd_stream52001"
+#define DB_QUERY_UUID "cmd_stream52003"
+
+
 // query options --- note that the sampler doesnt use/check any of the query info
-#define NUM_SQUERIES 3
+#define NUM_SQUERIES 4
 #define NUM_QUERIES 3
 
+/*
 struct Sampler_Query {
         char cmd[48];
         int stream;
@@ -89,7 +100,9 @@ struct Sampler_Query squeries[3] = {{ SETUP_FEEDBACK, 1, 1, 1, 0, 0, 0},
                                     {TEARDOWN_FEEDBACK, 1, 1, 1, 0, 0, 0},
                                     {QUERY_DB, 1, 0, 1, 1, 2, 1}
 };
+*/
 
+char* DSCommands[NUM_SQUERIES] = { SETUP_FEEDBACK, TEARDOWN_FEEDBACK, QUERY_DB, QUERY_RESPONSE};
 
 
 struct Db_Query {

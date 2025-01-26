@@ -51,11 +51,12 @@
 #include <ovis_json/ovis_json.h>
 #include <ovis_util/util.h>
 
-#define LDMS_PUBLISH_CMD "/projects/ovis/caasfeedback/Build/OVIS-4.4.4/sbin/ldmsd_stream_publish -x sock -p 52001 -s cmd_stream52001 -t json -a munge -h localhost "
+#define LDMS_PUBLISH_CMD_PARTIAL "/projects/ovis/caasfeedback/Build/OVIS-4.4.4/sbin/ldmsd_stream_publish -x sock  -t json -a munge"
 //output file to poll upon
 #define FILEBASE "/tmp/dynamicquery_uuid_"
 //ldms to which to publish and which one will write out
-#define MY_RESPONDER "52001"
+#define MY_
+#define MY_RESPONDER
 #define MY_STREAM "dynamicbar"
 
 /*
@@ -113,11 +114,14 @@ static int makeQuery(const char* uuid, const char* jsonfname,
         //HACK --- this will be the filename for now
         jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\",", uuid);
         if (!jb) goto out;
-        //HACK --- port id to tell which callback should write the file
-        jb = jbuf_append_attr(jb, RESPONDER_KEY, "\"%s\",", MY_RESPONDER);
-        //HACK -- stream to tell which callback should write the file
+        //who is the responder...
+        jb = jbuf_append_attr(jb, RESPONDER_KEY, "\"%s\",", UI_PUBLISH_TO_UUID);
+        if (!jb) goto out;
+        //on what stream is this the responder?
         jb = jbuf_append_attr(jb, RESPONSE_STREAM_KEY, "\"%s\",", MY_STREAM);
         if (!jb) goto out;
+        //who will execute the query?
+        jb = jbuf_append_attr(jb, QUERIER_KEY, "\"%s\",", DB_QUERY_UUID);
         //HACK -- may combine these
         jb = jbuf_append_attr(jb, STREAM_KEY, "\"%s\",", MY_STREAM);
         //HACK
@@ -154,12 +158,10 @@ static int makeQuery(const char* uuid, const char* jsonfname,
 
         snprintf(cmd, sizeof(cmd), "echo \"%s\" >> %s\n",
                 newtemp, jsonfname);
-        //        printf("building the json file executing '%s'\n", cmd);
         system(cmd);
 
-        snprintf(cmd, sizeof(cmd), "%s -f %s\n",
-                 LDMS_PUBLISH_CMD, jsonfname);
-        //        printf("publishing calling '%s'\n", cmd);
+        snprintf(cmd, sizeof(cmd), "%s %s -f %s\n",
+                 LDMS_PUBLISH_CMD_PARTIAL, UI_PUBLISH_UUID_ARGS, jsonfname);
         system(cmd);
 
 
@@ -218,7 +220,6 @@ int main(int argc, char **argv){
 
 
         //delete the file
-
         //        system(cmd);
         //        snprintf(cmd, sizeof(cmd), "rm %s", fname);
         //        system(cmd);

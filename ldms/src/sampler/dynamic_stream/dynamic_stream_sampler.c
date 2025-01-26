@@ -87,13 +87,17 @@
 #define PRDCR_STOP_FMT "prdcr_stop name=%s"
 #define PRDCR_DEL_FMT "prdcr_del name=%s"
 
-static char *stream;
+//this is the stream that I listen on and has to be unique. using
+//it as a UUID for identifying myself, endpoints of dynamic streams, etc.
+static char *stream = NULL;
+static char *myUUID = NULL;
 static struct ldmsd_plugin *myself;
 static ldmsd_msg_log_f msglog;
 static base_data_t base;
+//TODO: not keeping track of the dynamic streams, but will need to if
+//I need to clean them up in resilience scenarios. ALSO will need
+//if I need to track the endpoints of dynamic streams
 
-//HACK
-static int my_ldms_port;
 
 static const char *usage(struct ldmsd_plugin *self)
 {
@@ -123,6 +127,7 @@ static int propogate_feedback(int cmdidx,
                               const char* list,
                               const char* query, const char* uuid,
                               const char* responder,
+                              const char* querier,
                               const char* argstring){
 
         jbuf_t jb;
@@ -145,7 +150,7 @@ static int propogate_feedback(int cmdidx,
         if (!jb) goto out_1;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out_1;
-        jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", squeries[cmdidx].cmd);
+        jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", DSCommands[cmdidx]);
         if (!jb) goto out_1;
         jb = jbuf_append_attr(jb, STREAM_KEY, "\"%s\",", dyn_stream);
         if (!jb) goto out_1;
@@ -163,6 +168,10 @@ static int propogate_feedback(int cmdidx,
         }
         if (responder){
                 jb = jbuf_append_attr(jb, RESPONDER_KEY, "\"%s\",", responder);
+                if (!jb) goto out_1;
+        }
+        if (querier){
+                jb = jbuf_append_attr(jb, QUERIER_KEY, "\"%s\",", querier);
                 if (!jb) goto out_1;
         }
         if (argstring){
@@ -208,7 +217,7 @@ static int propogate_feedback(int cmdidx,
 
  out_1:
         msglog(LDMSD_LERROR, SAMP " Cannot build '%s' message\n",
-               squeries[cmdidx].cmd);
+               DSCommands[cmdidx]);
         rc = -1;
         goto out;
 
@@ -224,13 +233,24 @@ static int propogate_feedback(int cmdidx,
         return rc;
 }
 
+static int printJSONattrs(json_entity_t e)
+{
+        json_entity_t di;
+
+        for (di = json_attr_first(e); di; di = json_attr_next(di)){
+                msglog(LDMSD_LDEBUG, "attr='%s'\n",
+                       di->value.attr_->name->value.str_->str);
+        }
+
+
+        return 0;
+}
 
 static int turnaround(char* dest, const char* port,
                       const char* xprt, const char* auth,
                       const char* dyn_stream)
 {
 
-        char* teststr = "This is a test return";
         ldms_t ldms = NULL;
         jbuf_t jb;
         int rc = 0;
@@ -249,35 +269,33 @@ static int turnaround(char* dest, const char* port,
                 goto out;
         }
 
-        //sending to the prev hardwired guy
+        //sending to the prev hardwired guy (in args).
+        //This is not a message that is intended to be processed.
         jb = jbuf_new();
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", "foo");
         if (!jb) goto out;
-        jb = jbuf_append_attr(jb, STREAM_KEY, "\"%s\",", "bar");
+        jb = jbuf_append_attr(jb, STREAM_KEY, "\"%s\",", dyn_stream);
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, PRDCRNAME_KEY, "\"%s\",", "zed");
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, LIST_KEY, "\"%s\"", "wugga");
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "}}"); if (!jb) goto out;
-        if (0){
-                rc = ldmsd_stream_publish(ldms, dyn_stream, LDMSD_STREAM_STRING,
-                                          teststr, strlen(teststr)+1);
-        } else {
-                rc = ldmsd_stream_publish(ldms, dyn_stream, LDMSD_STREAM_JSON,
+
+        rc = ldmsd_stream_publish(ldms, dyn_stream, LDMSD_STREAM_JSON,
                                   jb->buf, jb->cursor+1);
-        }
         if (rc){
                 msglog(LDMSD_LERROR,
                        SAMP " Error %d publishing to '%s'\n", rc, dyn_stream);
                 goto out;
         }
 
-        msglog(LDMSD_LDEBUG, SAMP " After publishing '%s'\n", teststr);
+        msglog(LDMSD_LDEBUG, SAMP " After publishing turnaround '%s'\n", jb->buf);
         goto out;
+
 
  out:
         if (ldms)
@@ -295,16 +313,14 @@ static int dynamic_message_handler(const char* stream,
                                    const char* msg, size_t msg_len)
 {
 
-        //parse the message to see if I am the end client and, if so,
-        //then I have to write it out to the querier
+        //parse the message to see if it is a response and if I am
+        //the responder. If so, I have to write it out to the querier
 
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
         json_entity_t ent = NULL;
         char *buff = NULL;
-        char *lresponder = NULL;
         char *luuid = NULL;
-        char *ldynstream = NULL;
         char *lresp = NULL;
         char cmd[1024];
         int resp_int = 0;
@@ -329,45 +345,43 @@ static int dynamic_message_handler(const char* stream,
                 goto out;
         }
 
-        //if I am the responder and this was received on the right stream, then print the response to the UUID
+        //what is this message about?
+        ent = json_value_find(jdoc, CMD_KEY);
+        if (!ent){
+                msglog(LDMSD_LINFO, SAMP " No " CMD_KEY " in message."
+                       " No further actions on this message\n");
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, SAMP " Error: " CMD_KEY " must be a string\n");
+                goto out;
+        }
+        //if CMD is NOT a query response....
+        if (strcmp(ent->value.str_->str, QUERY_RESPONSE)){
+                msglog(LDMSD_LINFO, SAMP " No actions to handle command '%s'."
+                       " This may or may not be ok.\n",
+                       ent->value.str_->str);
+                goto out;
+        }
+
+        //if I am the responder and this was received on the right stream,
+        //then print the response to the UUID
 
         //responder
         ent = json_value_find(jdoc, RESPONDER_KEY);
         if (!ent){
-                msglog(LDMSD_LINFO, " No " RESPONDER_KEY " in message\n");
+                msglog(LDMSD_LINFO, SAMP " No " RESPONDER_KEY " in message\n");
                 rc = -1;
                 goto out;
         }
         if (ent->type != JSON_STRING_VALUE){
                 rc = EINVAL;
-                msglog(LDMSD_LERROR, " Error: " RESPONDER_KEY " must be a string\n");
+                msglog(LDMSD_LERROR, SAMP " Error: " RESPONDER_KEY " must be a string\n");
                 goto out;
         }
-
-        lresponder = strdup(ent->value.str_->str);
-        if (!lresponder){
-                rc = ENOMEM;
-                msglog(LDMSD_LERROR, " Out of memory\n");
-                goto out;
-        }
-
-         //uuid
-        ent = json_value_find(jdoc, UUID_KEY);
-        if (!ent){
-                msglog(LDMSD_LINFO, " No " UUID_KEY " in message\n");
-                rc = -1;
-                goto out;
-        }
-        if (ent->type != JSON_STRING_VALUE){
-                rc = EINVAL;
-                msglog(LDMSD_LERROR, " Error: " UUID_KEY " must be a string\n");
-                goto out;
-        }
-
-        luuid = strdup(ent->value.str_->str);
-        if (!luuid){
-                rc = ENOMEM;
-                msglog(LDMSD_LERROR, " Out of memory\n");
+        if (strcmp(ent->value.str_->str, myUUID)){
+                msglog(LDMSD_LINFO, SAMP "I '%s' am not the responder\n", myUUID);
                 goto out;
         }
 
@@ -384,46 +398,54 @@ static int dynamic_message_handler(const char* stream,
                 goto out;
         }
 
-        ldynstream = strdup(ent->value.str_->str);
-        if (!ldynstream){
-                rc = ENOMEM;
-                msglog(LDMSD_LERROR, " Out of memory\n");
+        if (strcmp(ent->value.str_->str, stream)){
+                msglog(LDMSD_LINFO, SAMP "I '%s' am not the responder\n", myUUID);
                 goto out;
         }
 
-       //response
-        ent = json_value_find(jdoc, RESPONSE_KEY);
+        //I am the responder
+
+        //uuid
+        ent = json_value_find(jdoc, UUID_KEY);
         if (!ent){
-                msglog(LDMSD_LINFO, " No " RESPONSE_KEY " in message\n");
+                msglog(LDMSD_LERROR, SAMP " No " UUID_KEY " in message\n");
                 rc = -1;
                 goto out;
         }
         if (ent->type != JSON_STRING_VALUE){
                 rc = EINVAL;
-                msglog(LDMSD_LERROR, " Error: " RESPONSE_KEY " must be a string\n");
+                msglog(LDMSD_LERROR, SAMP " Error: " UUID_KEY " must be a string\n");
+                goto out;
+        }
+
+        luuid = strdup(ent->value.str_->str);
+        if (!luuid){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+        //response
+        ent = json_value_find(jdoc, RESPONSE_KEY);
+        if (!ent){
+                msglog(LDMSD_LINFO, SAMP " No " RESPONSE_KEY " in message\n");
+                rc = -1;
+                goto out;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR, SAMP " Error: " RESPONSE_KEY " must be a string\n");
                 goto out;
         }
 
         lresp = strdup(ent->value.str_->str);
         if (!lresp){
                 rc = ENOMEM;
-                msglog(LDMSD_LERROR, " Out of memory\n");
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                 goto out;
         }
 
-        msglog(LDMSD_LINFO, " stream comp: '%s' '%s'\n", ldynstream, stream);
-        if (strcmp(ldynstream, stream)){
-                msglog(LDMSD_LINFO, "Not the right stream '%s' '%s'\n", ldynstream, stream);
-                goto out;
-        }
-
-        resp_int = atoi(lresponder);
-        if (resp_int != my_ldms_port){
-                msglog(LDMSD_LINFO, "Not the responder '%s' '%d'\n", lresponder, my_ldms_port);
-                goto out;
-        }
-
-        msglog(LDMSD_LINFO, " I am the responder and SHOULD BE PRINTING '%s' to '%s'\n",
+         msglog(LDMSD_LINFO, " I am the responder and SHOULD BE PRINTING '%s' to '%s'\n",
                lresp, luuid);
 
         snprintf(cmd, sizeof(cmd), "echo \"%s\" >> %s\n",
@@ -433,27 +455,17 @@ static int dynamic_message_handler(const char* stream,
         msglog(LDMSD_LINFO, " After printing to '%s'\n", luuid);
 
 
- responder:
-
-                    ///FREE
-        if (buff) free(buff);
-        if (jp) json_parser_free(jp);
-        if (jdoc) json_entity_free(jdoc);
-        rc = 0;
-
-        return rc;
-
-
  out:
 
-                    ///FREE
-        msglog(LDMSD_LDEBUG, SAMP " I am not the responder\n");
+        if (luuid) free(luuid);
+        if (lresp) free(lresp);
         if (buff) free(buff);
         if (jp) json_parser_free(jp);
         if (jdoc) json_entity_free(jdoc);
         rc = 0;
 
         return rc;
+
 }
 
 
@@ -475,6 +487,10 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
                        ldmsd_stream_client_name(c), "JSON",
                        msg, msg_len, entity);
 
+                //this is a TEST
+                if (1){
+                        printJSONattrs(entity);
+                }
 
                 rc = dynamic_message_handler(ldmsd_stream_client_name(c),
                                              msg, msg_len);
@@ -567,6 +583,7 @@ static int parse_feedback_message_for_setup_teardown(const char* msg, int msg_le
 static int parse_feedback_message_for_query(const char* msg, int msg_len,
                                             char** query_e, char** uuid_e,
                                             char** responder_e,
+                                            char** querier_e,
                                             char** argstring_e)
 {
         json_parser_t jp = NULL;
@@ -576,6 +593,7 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         char *query = NULL;
         char *uuid = NULL;
         char *responder = NULL;
+        char *querier = NULL;
         char *argstring = NULL;
         int rc = 0;
 
@@ -598,7 +616,7 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
                 goto out;
         }
 
-        //TODO: See if there is nan iterator where I can just pack up all
+        //TODO: See if there is an iterator where I can just pack up all
         //the other fields, since they arent actually used
         ent = json_value_find(jdoc, QUERY_KEY);
         if (!ent){
@@ -644,16 +662,36 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         if (!ent){
                 msglog(LDMSD_LERROR, SAMP " No " RESPONDER_KEY " in message\n");
                 rc = -1;
-                goto uuidparse;
+                goto querierparse;
         }
         if (ent->type != JSON_STRING_VALUE){
                 rc = EINVAL;
                 msglog(LDMSD_LERROR,
                        SAMP " Error: " RESPONDER_KEY " must be a string\n");
-                goto uuidparse;
+                goto querierparse;
         }
         responder = strdup(ent->value.str_->str);
         if (!responder){
+                rc = ENOMEM;
+                msglog(LDMSD_LERROR, SAMP " Out of memory\n");
+                goto out;
+        }
+
+ querierparse:
+        ent = json_value_find(jdoc, QUERIER_KEY);
+        if (!ent){
+                msglog(LDMSD_LERROR, SAMP " No " QUERIER_KEY " in message\n");
+                rc = -1;
+                goto uuidparse;
+        }
+        if (ent->type != JSON_STRING_VALUE){
+                rc = EINVAL;
+                msglog(LDMSD_LERROR,
+                       SAMP " Error: " QUERIER_KEY " must be a string\n");
+                goto uuidparse;
+        }
+        querier = strdup(ent->value.str_->str);
+        if (!querier){
                 rc = ENOMEM;
                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                 goto out;
@@ -685,6 +723,7 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         *argstring_e = argstring;
         *uuid_e = uuid;
         *responder_e = responder;
+        *querier_e = querier;
 
         if (buff) free(buff);
         if (jp) json_parser_free(jp);
@@ -978,7 +1017,7 @@ static int call_ldmsd_controller(int cmdidx, const char* dynstream,
 
         msglog(LDMSD_LINFO,
                SAMP " Issuing commands to ldmsd_controller for '%s'\n",
-               squeries[cmdidx].cmd);
+               DSCommands[cmdidx]);
 
 
         switch (cmdidx){
@@ -1099,11 +1138,7 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
                            const char* upstreamport,
                            const char* upstreamcmdstream,
                            const char* sendon,
-                           const char* dynstream,
-                           const char* query,
-                           const char* uuid,
-                           const char* responder,
-                           const char* argstring)
+                           const char* dynstream)
 {
 
         char lbuf[MAXBUF];
@@ -1124,42 +1159,21 @@ static int end_of_the_line(int cmdidx, const char* upstreamhost,
         case 1:
                 if (TURNAROUND){
                         msglog(LDMSD_LINFO, SAMP " End of the line. Sleeping 20 and"
-                               " Testing sending a message basend_of_theck down\n");
+                               " Testing sending a message send back down\n");
                         system("sleep 20");
                         turnaround("localhost", "52002",
                                    DYN_DEFAULT_XPRT, DYN_DEFAULT_AUTH,
                                    dynstream);
                 }
-                break;
-        case 2:
-                // call dynamic_query_client for now....
-                // ./dynamic_query_client QUERY_1 foo 52001 dynamicbar "a b c"
-
-                if (argstring){
-                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s %s %s \"%s\"",
-                                      QUERYDB_CLIENT_EXE,
-                                      query, uuid, responder, dynstream,
-                                      argstring);
-                } else {
-                        rc = snprintf(lbuf, sizeof(lbuf), "%s %s %s %s %s",
-                                      QUERYDB_CLIENT_EXE,
-                                      query, uuid, responder, dynstream);
-                }
-                msglog(LDMSD_LINFO, SAMP " End of the line."
-                       " Calling '%s'. Not parsing return.\n", lbuf);
-                system(lbuf);
-                msglog(LDMSD_LINFO, SAMP " After calling '%s'.\n", lbuf);
-                rc = 0;
-
+                rc = 1;
                 break;
         default:
-                //won't happen
+                //no other cmds do anything
+                rc = 0;
                 break;
         }
 
-        return 1;
-
-
+        return rc;
 }
 
 static int feedback_handler(int cmdidx, const char* msg, int msg_len)
@@ -1183,7 +1197,9 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         char *argstring = NULL;
         char *uuid = NULL;
         char *responder = NULL;
+        char *querier = NULL;
 
+        char lbuf[MAXBUF];
         ldmsd_stream_client_t client = NULL;
 
         // the host and port info will be used for ldmsd controller
@@ -1196,7 +1212,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         if (rc != 0){
                 msglog(LDMSD_LDEBUG, SAMP
                        " Error parsing message for sendon. No further actions on '%s'n",
-                       squeries[cmdidx].cmd);
+                       DSCommands[cmdidx]);
 
                 goto out;
         }
@@ -1209,40 +1225,69 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                 if (rc != 0){
                         msglog(LDMSD_LDEBUG, SAMP
                                " Error parsing message for setup_teardown."
-                               " No further actions on '%s'\n",
-                               squeries[cmdidx].cmd);
-                        goto out;
+                             " No further actions on '%s'\n",
+                             DSCommands[cmdidx]);
+                     goto out;
+                }
 
+                rc = end_of_the_line(cmdidx, upstreamhost, upstreamport,
+                                     upstreamcmdstream, sendon,
+                                     dynstream);
+                if (rc){
+                        msglog(LDMSD_LDEBUG, SAMP " I '%s' am the end of the line."
+                               " This may be ok. No further actions on '%s'",
+                               myUUID, DSCommands[cmdidx]);
+                        rc = 0; //because this is actually ok
+                        goto out;
                 }
                 break;
         case 2:
                 rc = parse_feedback_message_for_query(msg, msg_len, &query,
                                                       &uuid, &responder,
+                                                      &querier,
                                                       &argstring);
                 if (rc != 0){
                         msglog(LDMSD_LDEBUG, SAMP
                                " Error parsing message for query."
                                " No further actions on '%s'\n",
-                               squeries[cmdidx].cmd);
+                               DSCommands[cmdidx]);
                         goto out;
+                }
+
+                //am I the querier? if so, execute the query and stop
+                if (!strcmp(querier, myUUID)){
+                        // ./dynamic_query_client QUERY_1 foo 52001 dynamicbar "a b c"
+                        msglog(LDMSD_LDEBUG,
+                               SAMP " I '%s' am the querier '%s' and will query\n",
+                               myUUID, querier);
+                        if (argstring){
+                                rc = snprintf(lbuf, sizeof(lbuf),
+                                              "%s %s %s %s %s \"%s\"",
+                                              QUERYDB_CLIENT_EXE,
+                                              query, uuid, responder, dynstream,
+                                              argstring);
+                        } else {
+                                rc = snprintf(lbuf, sizeof(lbuf),
+                                              "%s %s %s %s %s",
+                                              QUERYDB_CLIENT_EXE,
+                                              query, uuid, responder,
+                                              dynstream);
+                        }
+                        system(lbuf);
+                        msglog(LDMSD_LINFO, SAMP " After calling query '%s'.\n",
+                               lbuf);
+                        rc = 0;
+                        goto out;
+                } else {
+                        msglog(LDMSD_LDEBUG,
+                               SAMP " I '%s' am not the querier '%s'"
+                               " and will pass the message on\n",
+                               myUUID, querier);
                 }
                 break;
         default:
                 //wont happen
                 break;
-        }
-
- endoftheline:
-        rc = end_of_the_line(cmdidx, upstreamhost, upstreamport,
-                             upstreamcmdstream, sendon,
-                             dynstream, query, uuid, responder,
-                             argstring);
-        if (rc){
-                msglog(LDMSD_LDEBUG, SAMP " Nothing to act upon. "
-                       " This may be ok. No further actions on '%s'",
-                       squeries[cmdidx].cmd);
-                rc = 0; //because this is actually ok
-                goto out;
         }
 
         msglog(LDMSD_LINFO,
@@ -1258,11 +1303,6 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                upstreamhost, upstreamport,
                upstreamxprt, upstreamauth,
                upstreamcmdstream, sendon);
-
-        //FIXME/TODO --- this is a hack
-        my_ldms_port = atoi(myport);
-        msglog(LDMSD_LINFO, SAMP "hack my_ldms_port = '%d'\n",
-               my_ldms_port);
 
  controller:
         switch (cmdidx){
@@ -1334,7 +1374,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                                 upstreamxprt, upstreamauth,
                                 upstreamcmdstream, dynstream,
                                 prdcrname, sendon, query, uuid,
-                                responder, argstring);
+                                responder, querier, argstring);
         if (rc)
                 msglog(LDMSD_LERROR, SAMP
                        " cannot propogate feedback w/Error case \n");
@@ -1367,6 +1407,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         if (argstring) free(argstring);
         if (uuid) free(uuid);
         if (responder) free(responder);
+        if (querier) free(querier);
 
         msglog(LDMSD_LDEBUG,
                SAMP " completed feedback_handler returning %d\n", rc);
@@ -1486,13 +1527,13 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 
                 found = 0;
                 for (i = 0; i < NUM_SQUERIES; i++){
-                        if (!strcmp(cmd, squeries[i].cmd)){
+                        if (!strcmp(cmd, DSCommands[i])){
                                 found = 1;
                                 rc = feedback_handler(i, msg, msg_len);
                                 if (rc != 0)
                                         msglog(LDMSD_LERROR, SAMP
                                                " '%s' error=%d\n",
-                                               squeries[i].cmd, rc);
+                                               DSCommands[i], rc);
                                 break;
                         }
                 }
@@ -1538,13 +1579,16 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl,
 	int rc = 0;
 
 	value = av_value(avl, "stream");
-	if (value)
+	if (value) {
 		stream = strdup(value); //should be cmd_streamPORTNO
-	else
-		stream = strdup(CMD_STREAM_BASE);
+                myUUID = strdup(stream);
+        } else {
+                msglog(LDMSD_LERROR, SAMP " must have a stream to which it is "
+                       "listening and that must be unique\n");
+        }
 
         myself = self;
-        msglog(LDMSD_LCRITICAL, SAMP " subscribing to stream '%s'\n", stream);
+        msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n", stream);
 	ldmsd_stream_client_t client =
                 ldmsd_stream_subscribe(stream, cmd_recv_cb, self);
         if (!client){
@@ -1558,6 +1602,10 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl,
 
 static void term(struct ldmsd_plugin *self)
 {
+        if (myUUID) free(myUUID);
+        myUUID = NULL;
+        if (stream) free(stream);
+        stream = NULL;
         myself = NULL;
 }
 

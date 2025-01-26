@@ -160,6 +160,8 @@ jbuf_t execResultsQuery(int qu, const char* uuid,
         if (!jb) goto out;
         jb = jbuf_append_str(jb, "{");
         if (!jb) goto out;
+        jb = jbuf_append_attr(jb, CMD_KEY, "\"%s\",", QUERY_RESPONSE);
+        if (!jb) goto out;
         jb = jbuf_append_attr(jb, RESPONSE_KEY, "\"%s\",", lbuf);
         if (!jb) goto out;
         jb = jbuf_append_attr(jb, UUID_KEY, "\"%s\",", uuid);
