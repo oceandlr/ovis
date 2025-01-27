@@ -741,14 +741,15 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
 
 }
 
+
 static int parse_feedback_message_for_sendon(const char* msg, int msg_len,
-                                  char** dynstream_e,
-                                  char** myhost_e, char** myport_e,
-                                  char** myxprt_e, char** myauth_e,
-                                  char** upstreamhost_e, char** upstreamport_e,
-                                  char** upstreamxprt_e, char** upstreamauth_e,
-                                  char** upstreamcmdstream_e,
-                                  char** sendon_e)
+                                             char** dynstream_e,
+                                             char** myhost_e, char** myport_e,
+                                             char** myxprt_e, char** myauth_e,
+                                             char** upstreamhost_e, char** upstreamport_e,
+                                             char** upstreamxprt_e, char** upstreamauth_e,
+                                             char** upstreamcmdstream_e,
+                                             char** sendon_e)
 {
 
         char *buff = NULL;
@@ -841,6 +842,10 @@ static int parse_feedback_message_for_sendon(const char* msg, int msg_len,
                 msglog(LDMSD_LERROR, SAMP " Out of memory\n");
                 goto bad;
         }
+
+        //TODO: change this so we just extract the info from the list
+        //but don't change it. That was we don't have to rebuild the message
+        //each time.
 
         //parse the list
         mydata = strtok_r(dynlist, ":", &saveptr);

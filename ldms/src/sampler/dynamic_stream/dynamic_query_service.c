@@ -59,7 +59,6 @@ static char *xprt = "sock";
 static char *auth = "none";
 static const int auth_opt_max = AUTH_OPT_MAX;
 static ldmsd_stream_type_t typ = LDMSD_STREAM_JSON;
-static ldms_t ldms = NULL;
 static int SocketFD = -1;
 static int ConnectFD = -1;
 
@@ -88,10 +87,6 @@ void cleanup(){
         printf("In cleanup\n");
         close(SocketFD);
         close(ConnectFD);
-        if (ldms)
-                ldms_xprt_close(ldms);
-        ldms = NULL;
-
 }
 
 
@@ -410,25 +405,28 @@ int parseArgs(int argc, char **argv){
 }
 
 
-int setupLDMSD(){
+ldms_t setupLDMSD(const char* lxprt, const char* lauth, const char* lhost, const char* lport){
         //have to do this in the thread
 
-	int rc = 0;
+        ldms_t ldms = NULL;
+        int rc;
 
-        ldms = ldms_xprt_new_with_auth(xprt, NULL, auth, NULL);
+        ldms = ldms_xprt_new_with_auth(lxprt, NULL, lauth, NULL);
         if (!ldms) {
-          rc = errno;
           printf("Failed to create the LDMS transport endpoint.\n");
-          return rc;
+          return NULL;
         }
 
-        rc = ldms_xprt_connect_by_name(ldms, host, port, NULL, NULL);
+        rc = ldms_xprt_connect_by_name(ldms, lhost, lport, NULL, NULL);
         if (rc){
           printf("Error %d connecting to peer\n", rc);
-          return rc;
+          if (ldms) {
+                  ldms_xprt_close(ldms);
+                  ldms = NULL;
+          }
         }
 
-        return rc;
+        return ldms;
 }
 
 void handleMsg(int CFD){
@@ -436,6 +434,7 @@ void handleMsg(int CFD){
         char recvBuff[MAXBUF];
         int numrcv;
         jbuf_t jb;
+        ldms_t ldms = NULL;
         char* uuid = NULL;
         char* responder = NULL;
         char* dynstream = NULL;
@@ -471,8 +470,9 @@ void handleMsg(int CFD){
         }
 
         printf("Setting up ldmsd connection in the thread now\n");
-        rc = setupLDMSD();
-        if (rc != 0){
+        //TODO: since this is setup each time, then pass it in the message and use it for the send
+        ldms = setupLDMSD(xprt, auth, host, port);
+        if (!ldms){
                 printf("Cannot setup LDMSD. Not publishing.\n");
                 goto out;
         }
@@ -508,7 +508,6 @@ void handleMsg(int CFD){
                 free(args);
         args = NULL;
 
-        printf("returning\n");
         return;
 }
 
