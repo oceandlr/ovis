@@ -102,16 +102,23 @@ struct Sampler_Query squeries[3] = {{ SETUP_FEEDBACK, 1, 1, 1, 0, 0, 0},
 };
 */
 
+struct HostInfo {
+        char* host;
+        char* port;
+        char* xprt;
+        char* auth;
+        char* stream;
+};
+
 char* DSCommands[NUM_SQUERIES] = { SETUP_FEEDBACK, TEARDOWN_FEEDBACK, QUERY_DB, QUERY_RESPONSE};
 
-
-struct Db_Query {
+struct DbQuery {
 	char qkey[48];
 	char qstring[100];
 	int nargs; //currently unused
 };
 
-struct Db_Query queries[3] = {{ "QUERY_1", "/projects/ovis/caasfeedback/Build/streams/fakedbcall.sh", 2},
+struct DbQuery queries[3] = {{ "QUERY_1", "/projects/ovis/caasfeedback/Build/streams/fakedbcall.sh", 2},
                               { "QUERY_2", "python3.6 /opt/ovis/lib/python3.6/site-packages/graf_analysis/balance_caas.py", 0},
                               { "QUERY_3", "echo \"junk\"", 0}
 };

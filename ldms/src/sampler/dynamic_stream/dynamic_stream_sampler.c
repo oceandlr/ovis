@@ -1205,6 +1205,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         char *querier = NULL;
 
         char lbuf[MAXBUF];
+        //TODO: do I have to keep and free this?
         ldmsd_stream_client_t client = NULL;
 
         // the host and port info will be used for ldmsd controller
@@ -1594,6 +1595,7 @@ static int config(struct ldmsd_plugin *self, struct attr_value_list *kwl,
 
         myself = self;
         msglog(LDMSD_LINFO, SAMP " subscribing to stream '%s'\n", stream);
+        //TODO: do I have to keep and free this?
 	ldmsd_stream_client_t client =
                 ldmsd_stream_subscribe(stream, cmd_recv_cb, self);
         if (!client){
