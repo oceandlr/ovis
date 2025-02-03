@@ -108,6 +108,7 @@ struct HostInfo {
         char* xprt;
         char* auth;
         char* stream;
+        int end;
 };
 
 char* DSCommands[NUM_SQUERIES] = { SETUP_FEEDBACK, TEARDOWN_FEEDBACK, QUERY_DB, QUERY_RESPONSE};
