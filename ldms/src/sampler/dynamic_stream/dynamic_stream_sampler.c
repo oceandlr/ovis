@@ -174,9 +174,8 @@ static int propogate_feedback(int cmdidx, const char* msg, int msg_len,
         ldms_t ldms = NULL;
         int rc = 0;
 
-        // For SETUP_FEEDBACK, QUERY_DB, and TEARDOWN_FEEDBACK need all upstreaminfo:
-        // upstreamcmdstream name, upstreamhost, upstream auth, upstream xprt
-        // these are not needed for the last one in the line
+        // For SETUP_FEEDBACK, QUERY_DB, and TEARDOWN_FEEDBACK need all
+        // upstreaminfo. these are not needed for the last one in the line
 
         if (myhi->end){
                 msglog(LDMSD_LDEBUG, SAMP
@@ -184,8 +183,9 @@ static int propogate_feedback(int cmdidx, const char* msg, int msg_len,
                 return 0;
         }
 
-        //set up the connectionn
-        msglog(LDMSD_LDEBUG, SAMP " setting up the connection to be able to publish\n");
+        //set up the connection
+        msglog(LDMSD_LDEBUG,
+               SAMP " setting up the connection to be able to publish\n");
         ldms = ldms_xprt_new_with_auth(uphi->xprt, NULL, uphi->auth, NULL);
         if (!ldms) {
                 rc = errno;
@@ -193,7 +193,8 @@ static int propogate_feedback(int cmdidx, const char* msg, int msg_len,
                        " Failed to create the LDMS transport endpoint\n");
                 goto out;
         }
-        rc = ldms_xprt_connect_by_name(ldms, uphi->host, uphi->port, NULL, NULL);
+        rc = ldms_xprt_connect_by_name(ldms, uphi->host, uphi->port,
+                                       NULL, NULL);
         if (rc) {
                 msglog(LDMSD_LERROR, SAMP " Error %d connecting to peer\n", rc);
                 goto out;
@@ -509,13 +510,14 @@ static int dynamic_stream_recv_cb(ldmsd_stream_client_t c, void *ctxt,
 
  out:
 
-        msglog(LDMSD_LDEBUG, SAMP " completed dynamic_stream_recv_cb returning %d\n", rc);
+        msglog(LDMSD_LDEBUG,
+               SAMP " dynamic_stream_recv_cb returning %d\n", rc);
         return rc;
 
 }
 
-static int parse_feedback_message_for_setup_teardown(const char* msg, int msg_len,
-                                                     char** prdcrname_e)
+static int get_setup_teardown_args(const char* msg, int msg_len,
+                                   char** prdcrname_e)
 {
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
@@ -571,19 +573,16 @@ static int parse_feedback_message_for_setup_teardown(const char* msg, int msg_le
         if (jp) json_parser_free(jp);
         if (jdoc) json_entity_free(jdoc);
 
-        msglog(LDMSD_LDEBUG,
-               SAMP " completed parse_feedback_message_for_setup_teardown"
-               " returning %d\n", rc);
+        msglog(LDMSD_LDEBUG, SAMP " get_setup_teardown_args returning %d\n", rc);
 
         return rc;
 
 }
 
-static int parse_feedback_message_for_query(const char* msg, int msg_len,
-                                            char** query_e, char** uuid_e,
-                                            char** responder_e,
-                                            char** querier_e,
-                                            char** argstring_e)
+static int get_query_args(const char* msg, int msg_len,
+                          char** query_e, char** uuid_e,
+                          char** responder_e, char** querier_e,
+                          char** argstring_e)
 {
         json_parser_t jp = NULL;
         json_entity_t jdoc = NULL;
@@ -732,18 +731,15 @@ static int parse_feedback_message_for_query(const char* msg, int msg_len,
         //return NULLs for bad fields
         //caller has responsibility to free
 
-        msglog(LDMSD_LDEBUG,
-               SAMP " completed parse_feedback_message_for_query"
-               " returning %d\n",
-               rc);
+        msglog(LDMSD_LDEBUG, SAMP " get_query_args returning %d\n", rc);
 
         return rc;
 
 }
 
-static int parse_string_for_HostInfo(char* str, char* matchUUID,
-                                     struct HostInfo* hi,
-                                     char** rest)
+static int get_HostInfo(char* str, char* matchUUID,
+                        struct HostInfo* hi,
+                        char** rest)
 {
 
         char* mydata = NULL;
@@ -772,15 +768,12 @@ static int parse_string_for_HostInfo(char* str, char* matchUUID,
                 tok = strtok_r(mydatacp, "@", &saveptr);
                 if (tok){
                         hi->host = strdup(tok);
-                        //                        msglog(LDMSD_LDEBUG, SAMP "\t myhost='%s'\n", hi->host);
                         tok = strtok_r(NULL, "@", &saveptr);
                         if (tok){
                                 hi->port = strdup(tok);
-                                //                                msglog(LDMSD_LDEBUG, SAMP "\t myport='%s'\n", hi->port);
                                 tok = strtok_r(NULL, "@", &saveptr);
                                 if (tok){
                                         hi->stream = strdup(tok);
-                                        //                                        msglog(LDMSD_LDEBUG, SAMP "\t mystream='%s'\n", hi->stream);
                                         tok = strtok_r(NULL, "@", &saveptr);
                                         if (tok){
                                                 hi->xprt = strdup(tok);
@@ -806,21 +799,15 @@ static int parse_string_for_HostInfo(char* str, char* matchUUID,
                         break;
                 }
 
-                //                printHostInfo(msglog, hi, " extracted: ");
-
                 //if I'm given something to match, see if it matches
                 //if not, then just return the first one
                 if (matchUUID){
                         if (!strcmp(hi->stream, matchUUID)){
                                 found = 1;
-                                //                                msglog(LDMSD_LDEBUG, SAMP " found '%s' so breaking\n",
-                                //                                       matchUUID);
                                 break;
                         }
                 } else {
                         found = 1;
-                        //                        msglog(LDMSD_LDEBUG, SAMP " looking for first item, so breaking\n",
-                        //                                       matchUUID);
                         break;
                 }
 
@@ -829,26 +816,20 @@ static int parse_string_for_HostInfo(char* str, char* matchUUID,
                 mydata = strtok_r(NULL, ":", &outersaveptr);
         } while (mydata);
 
-        //        msglog(LDMSD_LDEBUG, SAMP "broken: mydata = '%s' rest = '%s'\n", mydata,
-        //outersaveptr);
-
         if (!found){
                 msglog(LDMSD_LDEBUG, SAMP " I '%s' am not in the list - bad\n",
                        myUUID);
                 rc = -1;
                 goto out;
-        } else {
-                msglog(LDMSD_LDEBUG, SAMP " I '%s' am in the list - good\n",
-                       myUUID);
         }
 
+        //I am in the list....am I the end?
         if (!outersaveptr || !strlen(outersaveptr)){
                 msglog(LDMSD_LDEBUG, SAMP " no upstream data -- "
                        "I'm the end of the line and that is ok.\n");
                 hi->end = 1;
                 *rest = NULL;
         } else {
-                msglog(LDMSD_LDEBUG, SAMP " I am not the end\n");
                 hi->end = 0;
                 *rest = strdup(outersaveptr);
         }
@@ -859,16 +840,14 @@ static int parse_string_for_HostInfo(char* str, char* matchUUID,
         if (rc)
                 freeHostInfo(hi);
 
-        printf("Returing from parse_string_for_Host_Info\n");
+        msglog(LDMSD_LDEBUG, SAMP "Returing from get_HostInfo '%d'\n", rc);
         return rc;
 
 }
 
 
-static int parse_feedback_message_for_HostInfos(const char* msg, int msg_len,
-                                                char** dynstream_e,
-                                                struct HostInfo* myhi,
-                                                struct HostInfo* uphi)
+static int get_HostInfos(const char* msg, int msg_len, char** dynstream_e,
+                         struct HostInfo* myhi, struct HostInfo* uphi)
 {
 
         char *buff = NULL;
@@ -949,16 +928,15 @@ static int parse_feedback_message_for_HostInfos(const char* msg, int msg_len,
 
 
         //look for me
-        rc = parse_string_for_HostInfo(dynlist, myUUID, myhi, &mydata);
+        rc = get_HostInfo(dynlist, myUUID, myhi, &mydata);
         if (rc) {
                 msglog(LDMSD_LINFO,
                        SAMP "Invalid HostInfo or not in list. Both bad.\n");
                 goto bad;
         }
-        printHostInfo(msglog, myhi, "My host: ");
         if (!myhi->end){
                 //look for upstream
-                rc = parse_string_for_HostInfo(mydata, NULL, uphi, &junk);
+                rc = get_HostInfo(mydata, NULL, uphi, &junk);
                 if (rc){
                         msglog(LDMSD_LERROR, SAMP "Invalid upHostInfo or "
                                " not in list. Both bad.'%d'\n",
@@ -966,7 +944,6 @@ static int parse_feedback_message_for_HostInfos(const char* msg, int msg_len,
                         goto bad;
                 }
         }
-        printHostInfo(msglog, uphi, "Up host: ");
         *dynstream_e = dynstream;
 
  bad:
@@ -983,7 +960,7 @@ static int parse_feedback_message_for_HostInfos(const char* msg, int msg_len,
         if (jdoc) json_entity_free(jdoc);
 
         msglog(LDMSD_LDEBUG,
-               SAMP " completed parse_feedback_message_for_HostInfos returning %d\n", rc);
+               SAMP " get_HostInfos returning %d\n", rc);
 
         //it will be the callers responsibility to free the arguments if they are good
         return rc;
@@ -1130,6 +1107,35 @@ static int call_ldmsd_controller(int cmdidx, const char* dynstream,
         return rc;
 }
 
+static int perform_query(const char* query, const char* uuid,
+                         const char* responder, const char* dynstream,
+                         const char* argstring)
+{
+        char lbuf[MAXBUF];
+        int rc;
+
+        if (argstring){
+                rc = snprintf(lbuf, sizeof(lbuf),
+                              "%s %s %s %s %s \"%s\"",
+                              QUERYDB_CLIENT_EXE,
+                              query, uuid, responder, dynstream,
+                              argstring);
+        } else {
+                rc = snprintf(lbuf, sizeof(lbuf),
+                              "%s %s %s %s %s",
+                              QUERYDB_CLIENT_EXE,
+                              query, uuid, responder,
+                              dynstream);
+        }
+        system(lbuf);
+        msglog(LDMSD_LINFO, SAMP " After calling query '%s'.\n",
+               lbuf);
+        rc = 0;
+
+        return rc;
+}
+
+
 static int end_of_the_line(int cmdidx, const char* dynstream)
 {
 
@@ -1180,7 +1186,6 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         char *responder = NULL;
         char *querier = NULL;
 
-        char lbuf[MAXBUF];
         //TODO: do I have to keep and free this?
         ldmsd_stream_client_t client = NULL;
 
@@ -1189,21 +1194,19 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
 
         // the host and port info will be used for ldmsd controller
         //ACG: can resuse this for query if prdcrname is ok to be null
-        rc = parse_feedback_message_for_HostInfos(msg, msg_len, &dynstream,
-                                                  &myhi, &uphi);
+        rc = get_HostInfos(msg, msg_len, &dynstream, &myhi, &uphi);
         if (rc != 0){
                 msglog(LDMSD_LDEBUG, SAMP
-                       " Error parsing message for sendon. No further actions on '%s'n",
+                       " Error parsing message for sendon."
+                       " No further actions on '%s'\n",
                        DSCommands[cmdidx]);
-
                 goto out;
         }
 
         switch (cmdidx){
         case 0:
         case 1:
-                rc = parse_feedback_message_for_setup_teardown(msg, msg_len,
-                                                               &prdcrname);
+                rc = get_setup_teardown_args(msg, msg_len, &prdcrname);
                 if (rc != 0){
                         msglog(LDMSD_LDEBUG, SAMP
                                " Error parsing message for setup_teardown."
@@ -1212,72 +1215,20 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                         goto out;
                 }
 
-                if (myhi.end)
-                        end_of_the_line(cmdidx, dynstream);
-                if (rc){
+                printHostInfo(msglog, &myhi, " my host\n");
+                printHostInfo(msglog, &uphi, " up host\n");
+
+                if (myhi.end) {
+                        end_of_the_line(cmdidx, dynstream); // testing....
+
                         msglog(LDMSD_LDEBUG, SAMP " I '%s' am the end of the line."
                                " This may be ok. No further actions on '%s'",
                                myUUID, DSCommands[cmdidx]);
                         rc = 0; //because this is actually ok
                         goto out;
                 }
-                break;
-        case 2:
-                rc = parse_feedback_message_for_query(msg, msg_len, &query,
-                                                      &uuid, &responder,
-                                                      &querier,
-                                                      &argstring);
-                if (rc != 0){
-                        msglog(LDMSD_LDEBUG, SAMP
-                               " Error parsing message for query."
-                               " No further actions on '%s'\n",
-                               DSCommands[cmdidx]);
-                        goto out;
-                }
 
-                //am I the querier? if so, execute the query and stop
-                if (!strcmp(querier, myUUID)){
-                        // ./dynamic_query_client QUERY_1 foo 52001 dynamicbar "a b c"
-                        msglog(LDMSD_LDEBUG,
-                               SAMP " I '%s' am the querier '%s' and will query\n",
-                               myUUID, querier);
-                        if (argstring){
-                                rc = snprintf(lbuf, sizeof(lbuf),
-                                              "%s %s %s %s %s \"%s\"",
-                                              QUERYDB_CLIENT_EXE,
-                                              query, uuid, responder, dynstream,
-                                              argstring);
-                        } else {
-                                rc = snprintf(lbuf, sizeof(lbuf),
-                                              "%s %s %s %s %s",
-                                              QUERYDB_CLIENT_EXE,
-                                              query, uuid, responder,
-                                              dynstream);
-                        }
-                        system(lbuf);
-                        msglog(LDMSD_LINFO, SAMP " After calling query '%s'.\n",
-                               lbuf);
-                        rc = 0;
-                        goto out;
-                } else {
-                        msglog(LDMSD_LDEBUG,
-                               SAMP " I '%s' am not the querier '%s'"
-                               " and will pass the message on\n",
-                               myUUID, querier);
-                }
-                break;
-        default:
-                //wont happen
-                break;
-        }
-
-        printHostInfo(msglog, &myhi, " my host\n");
-        printHostInfo(msglog, &uphi, " up host\n");
-
- controller:
-        switch (cmdidx){
-        case 0:
-        case 1:
+        controller:
                 // 1) use ldmsd_controller to tell this daemon on myhost myport
                 // to subscribe to stream dynstream from upstreamhost.
                 // OR if teardown, to tear down
@@ -1316,7 +1267,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                                        " (might be duplicate, so continuing)\n",
                                        dynstream);
                         } else {
-                                msglog(LDMSD_LINFO,
+                               msglog(LDMSD_LINFO,
                                        SAMP " subscribed to stream '%s'\n",
                                        dynstream);
                         }
@@ -1326,34 +1277,52 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
                                " its not written yet\n",
                                dynstream);
                 }
+                break;
+        case 2:
+                rc = get_query_args(msg, msg_len, &query, &uuid, &responder,
+                                    &querier, &argstring);
+                if (rc != 0){
+                        msglog(LDMSD_LDEBUG, SAMP
+                               " Error parsing message for query."
+                               " No further actions on '%s'\n",
+                               DSCommands[cmdidx]);
+                        goto out;
+                }
 
+                //am I the querier? if so, execute the query and stop
+                if (!strcmp(querier, myUUID)){
+                        // ./dynamic_query_client QUERY_1 foo 52001 dynamicbar "a b c"
+                        msglog(LDMSD_LDEBUG,
+                               SAMP " I '%s' am the querier '%s'and will"
+                               " query\n", myUUID, querier);
+                        rc = perform_query(query, uuid, responder, dynstream,
+                                           argstring);
+                        goto out;
+                } else {
+                        msglog(LDMSD_LDEBUG,
+                               SAMP " I '%s' am not the querier '%s'"
+                               " and will propogate the message\n",
+                               myUUID, querier);
+                }
                 break;
         default:
-                //do nothing
+                //wont happen
                 break;
         }
 
-
  prop:
-
-        // 3) have stripped off my daemon and send the message to upstream
-        // so that it can do the same up the stream
-        // ACG -- this will need to be for all, but the message will have
-        //different params for FEEDBACK as opposed to QUERY
+        //everyone will parse the same message:
         rc = propogate_feedback(cmdidx, msg, msg_len, &myhi, &uphi);
         if (rc)
                 msglog(LDMSD_LERROR, SAMP
                        " cannot propogate feedback w/Error case \n");
 
-        msglog(LDMSD_LERROR, SAMP " after propogate_feedback\n");
-
         if (holdrc){
                 rc = holdrc;
                 msglog(LDMSD_LERROR, SAMP
-                       "re-establishing error code to %d before returning\n",
+                       " re-establishing error code to %d before returning\n",
                        rc);
         }
-
 
  out:
 
@@ -1368,7 +1337,7 @@ static int feedback_handler(int cmdidx, const char* msg, int msg_len)
         if (querier) free(querier);
 
         msglog(LDMSD_LDEBUG,
-               SAMP " completed feedback_handler returning %d\n", rc);
+               SAMP " feedback_handler returning '%d'\n", rc);
 
         return rc;
 }
@@ -1524,7 +1493,7 @@ static int cmd_recv_cb(ldmsd_stream_client_t c, void *ctxt,
         if (jdoc) json_entity_free(jdoc);
         if (buff) free(buff);
 
-        msglog(LDMSD_LDEBUG, SAMP " completed cmd_recv_cb returning %d\n", rc);
+        msglog(LDMSD_LDEBUG, SAMP " cmd_recv_cb returning %d\n", rc);
 
 	return rc;
 }
